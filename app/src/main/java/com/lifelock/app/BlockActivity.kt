@@ -73,6 +73,7 @@ import androidx.compose.animation.core.animateFloat
 class BlockActivity : ComponentActivity() {
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
+        Pal.mode = 1
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
@@ -87,6 +88,7 @@ class BlockActivity : ComponentActivity() {
     }
 
     private fun show() {
+        Pal.mode = 1
         val pkg = intent.getStringExtra("pkg") ?: ""
         val kind = intent.getStringExtra("kind") ?: ""
         val msg = intent.getStringExtra("msg") ?: ""

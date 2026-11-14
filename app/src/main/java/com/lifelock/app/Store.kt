@@ -19,6 +19,11 @@ data class RemCfg(val on: Boolean, val from: Int, val to: Int, val every: Int)
 data class Habit(val id: String, val name: String, val emoji: String, val kind: Int, val target: Int, val unit: String,
                  val step: Int, val days: Int, val remOn: Boolean, val remFrom: Int, val remTo: Int, val remEvery: Int,
                  val created: Long, val streak: Int, val best: Int, val ev: Long)   // kind: 0 = yes/no, 1 = at least, 2 = at most
+data class Track(val id: String, val name: String, val emoji: String, val unit: String, val start: Double,
+                 val target: Double, val end: Long, val created: Long, val hist: List<Pair<Long, Double>>) {
+    val cur: Double get() = hist.lastOrNull()?.second ?: start
+    val up: Boolean get() = target >= start
+}
 data class Block(val kind: String, val msg: String, val passKey: String? = null)
 
 fun hhmm(m: Int) = "%02d:%02d".format(m / 60, m % 60)
@@ -56,8 +61,19 @@ object Store {
     private fun sp(c: Context) = c.getSharedPreferences("lifelock", Context.MODE_PRIVATE)
     fun today(): Long = LocalDate.now().toEpochDay()
 
+    private val parsed = java.util.concurrent.ConcurrentHashMap<String, Pair<String, Any>>()
+    @Suppress("UNCHECKED_CAST")
+    private fun <T : Any> cached(key: String, raw: String, parse: () -> T): T {
+        val p = parsed[key]
+        if (p != null && p.first == raw) return p.second as T
+        val v = parse()
+        parsed[key] = raw to v
+        return v
+    }
+
     // ---- goals ----
-    fun goals(c: Context): List<Goal> = JSONArray(sp(c).getString("goals", "[]")).objs().map {
+    fun goals(c: Context): List<Goal> = cached("goals", sp(c).getString("goals", "[]") ?: "[]") { parseGoals(c) }
+    private fun parseGoals(c: Context): List<Goal> = JSONArray(sp(c).getString("goals", "[]")).objs().map {
         Goal(it.getString("id"), it.getString("t"), it.getLong("e"), it.getJSONArray("a").strs(),
             it.getLong("l"), it.getInt("s"), it.getInt("b"), it.getLong("c"))
     }
@@ -87,7 +103,8 @@ object Store {
     fun deleteGoal(c: Context, id: String) = saveGoals(c, goals(c).filter { it.id != id })
 
     // ---- daily limits ----
-    fun limits(c: Context): List<Limit> = JSONArray(sp(c).getString("limits", "[]")).objs().map {
+    fun limits(c: Context): List<Limit> = cached("limits", sp(c).getString("limits", "[]") ?: "[]") { parseLimits(c) }
+    private fun parseLimits(c: Context): List<Limit> = JSONArray(sp(c).getString("limits", "[]")).objs().map {
         Limit(it.getString("p"), it.getInt("m"), it.getInt("s"), it.getLong("e"), it.getLong("c"))
     }
     fun saveLimits(c: Context, l: List<Limit>) {
@@ -117,8 +134,48 @@ object Store {
 
     // ---- usage (generic keyed counters) ----
     fun gKey(p: String, d: Long = today()) = "g_${p}_$d"
-    fun used(c: Context, key: String) = sp(c).getLong("u_$key", 0L)
-    fun addUsed(c: Context, key: String, ms: Long) = sp(c).edit().putLong("u_$key", used(c, key) + ms).apply()
+    private val usageMem = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val usageDirty = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    fun used(c: Context, key: String): Long = usageMem[key] ?: sp(c).getLong("u_$key", 0L)
+    fun addUsed(c: Context, key: String, ms: Long) { usageMem[key] = used(c, key) + ms; usageDirty.add(key) }
+    /** Writes pending usage to disk in a single batch. Called on screen-off, app switch and every few minutes. */
+    fun flushUsage(c: Context) {
+        if (usageDirty.isEmpty()) return
+        val ed = sp(c).edit()
+        for (k in usageDirty.toList()) { ed.putLong("u_$k", usageMem[k] ?: 0L); usageDirty.remove(k) }
+        ed.apply()
+    }
+
+    /** Milliseconds until a time-limited allowance for [p] runs out (Long.MAX_VALUE if none applies). */
+    fun remainingMs(c: Context, p: String, now: LocalDateTime): Long {
+        var best = Long.MAX_VALUE
+        val l = limits(c).firstOrNull { it.pkg == p }
+        if (l != null) { val k = gKey(p); best = minOf(best, (l.min + extra(c, k)) * 60000L - used(c, k)) }
+        for (s in scheds(c)) {
+            val wd = windowDay(s.days, s.start, s.end, now) ?: continue
+            val e = s.entries.firstOrNull { it.pkg == p } ?: continue
+            if (e.cap > 0) { val k = "s_${s.id}_${p}_$wd"; best = minOf(best, (e.cap + extra(c, k)) * 60000L - used(c, k)) }
+        }
+        return best
+    }
+
+    /** Milliseconds until the next schedule start/end or focus end. Long.MAX_VALUE if nothing time-based is configured. */
+    fun nextChangeMs(c: Context, now: LocalDateTime): Long {
+        var best = Long.MAX_VALUE
+        val fu = focusUntil(c) - System.currentTimeMillis()
+        if (fu > 0) best = fu
+        val today = now.toLocalDate()
+        for (s in scheds(c)) {
+            for (d in 0..7) {
+                val day = today.plusDays(d.toLong())
+                for (m in intArrayOf(s.start, s.end)) {
+                    val t = day.atStartOfDay().plusMinutes(m.toLong())
+                    if (t.isAfter(now)) { val ms = java.time.Duration.between(now, t).toMillis(); if (ms < best) best = ms }
+                }
+            }
+        }
+        return best
+    }
     fun extra(c: Context, key: String) = sp(c).getInt("x_$key", 0)
 
     fun rollover(c: Context) {
@@ -152,7 +209,8 @@ object Store {
     }
 
     // ---- schedules ----
-    fun scheds(c: Context): List<Sched> = JSONArray(sp(c).getString("scheds", "[]")).objs().map { o ->
+    fun scheds(c: Context): List<Sched> = cached("scheds", sp(c).getString("scheds", "[]") ?: "[]") { parseScheds(c) }
+    private fun parseScheds(c: Context): List<Sched> = JSONArray(sp(c).getString("scheds", "[]")).objs().map { o ->
         Sched(o.getString("id"), o.getString("n"), o.getInt("d"), o.getInt("s"), o.getInt("e"), o.getBoolean("a"),
             o.getJSONArray("en").objs().map { Entry(it.getString("p"), it.getInt("c")) }, o.getLong("c"))
     }
@@ -176,7 +234,8 @@ object Store {
     fun schedLocked(s: Sched) = schedActive(s) && System.currentTimeMillis() - s.created > 600000L
 
     // ---- quiet periods & reminder config ----
-    fun quiets(c: Context): List<Quiet> = JSONArray(sp(c).getString("quiets", "[]")).objs().map {
+    fun quiets(c: Context): List<Quiet> = cached("quiets", sp(c).getString("quiets", "[]") ?: "[]") { parseQuiets(c) }
+    private fun parseQuiets(c: Context): List<Quiet> = JSONArray(sp(c).getString("quiets", "[]")).objs().map {
         Quiet(it.getString("id"), it.getString("n"), it.getInt("d"), it.getInt("s"), it.getInt("e"))
     }
     private fun writeQuiets(c: Context, l: List<Quiet>) {
@@ -217,12 +276,14 @@ object Store {
     // ---- focus ----
     fun focusUntil(c: Context) = sp(c).getLong("fu", 0L)
     fun startFocus(c: Context, min: Int) = sp(c).edit().putLong("fu", System.currentTimeMillis() + min * 60000L).apply()
-    fun focusApps(c: Context): Set<String> =
+    fun focusApps(c: Context): Set<String> = cached("fa", sp(c).getString("fa", null) ?: "d") { parseFocus(c) }
+    private fun parseFocus(c: Context): Set<String> =
         JSONArray(sp(c).getString("fa", null) ?: "[\"com.whatsapp\",\"com.whatsapp.w4b\"]").strs().toSet()
     fun setFocusApps(c: Context, s: Set<String>) = sp(c).edit().putString("fa", JSONArray(s.toList()).toString()).apply()
 
     // ---- habits ----
-    fun habits(c: Context): List<Habit> = JSONArray(sp(c).getString("habits", "[]")).objs().map {
+    fun habits(c: Context): List<Habit> = cached("habits", sp(c).getString("habits", "[]") ?: "[]") { parseHabits(c) }
+    private fun parseHabits(c: Context): List<Habit> = JSONArray(sp(c).getString("habits", "[]")).objs().map {
         Habit(it.getString("id"), it.getString("n"), it.getString("em"), it.getInt("k"), it.getInt("t"), it.getString("u"),
             it.getInt("st"), it.getInt("d"), it.getBoolean("ro"), it.getInt("rf"), it.getInt("rt"), it.getInt("re"),
             it.getLong("c"), it.getInt("s"), it.getInt("b"), it.getLong("e"))
@@ -267,6 +328,52 @@ object Store {
     }
     fun nd(c: Context, k: String) = sp(c).getLong("nd_$k", 0L)
     fun setNd(c: Context, k: String, v: Long) = sp(c).edit().putLong("nd_$k", v).apply()
+
+    // ---- targets: numeric goals (weight, push-ups, savings...) ----
+    fun tracks(c: Context): List<Track> = cached("tracks", sp(c).getString("tracks", "[]") ?: "[]") { parseTracks(c) }
+    private fun parseTracks(c: Context): List<Track> = JSONArray(sp(c).getString("tracks", "[]")).objs().map { o ->
+        val h = o.getJSONArray("h")
+        Track(o.getString("id"), o.getString("n"), o.getString("em"), o.getString("u"), o.getDouble("s"), o.getDouble("t"),
+            o.getLong("e"), o.getLong("c"), List(h.length()) { i -> val a = h.getJSONArray(i); a.getLong(0) to a.getDouble(1) })
+    }
+    private fun writeTracks(c: Context, l: List<Track>) {
+        val a = JSONArray()
+        l.forEach { t ->
+            val h = JSONArray()
+            t.hist.forEach { h.put(JSONArray().put(it.first).put(it.second)) }
+            a.put(JSONObject().put("id", t.id).put("n", t.name).put("em", t.emoji).put("u", t.unit).put("s", t.start)
+                .put("t", t.target).put("e", t.end).put("c", t.created).put("h", h))
+        }
+        sp(c).edit().putString("tracks", a.toString()).apply()
+    }
+    fun saveTrack(c: Context, t: Track) {
+        val l = tracks(c)
+        writeTracks(c, if (l.any { it.id == t.id }) l.map { if (it.id == t.id) t else it } else l + t)
+    }
+    fun deleteTrack(c: Context, id: String) = writeTracks(c, tracks(c).filter { it.id != id })
+    fun trackSet(c: Context, id: String, v: Double) {
+        val r = Math.round(v * 100.0) / 100.0
+        writeTracks(c, tracks(c).map { if (it.id == id) it.copy(hist = (it.hist + (System.currentTimeMillis() to r)).takeLast(400)) else it })
+    }
+    fun trackAdd(c: Context, id: String, d: Double) {
+        val t = tracks(c).firstOrNull { it.id == id } ?: return
+        trackSet(c, id, t.cur + d)
+    }
+    fun trackUndo(c: Context, id: String) =
+        writeTracks(c, tracks(c).map { if (it.id == id && it.hist.size > 1) it.copy(hist = it.hist.dropLast(1)) else it })
+
+    // ---- apps where blocking pauses (compatibility mode) ----
+    fun pauseApps(c: Context): Set<String> = cached("pa", sp(c).getString("pa", "[]") ?: "[]") {
+        JSONArray(sp(c).getString("pa", "[]")).strs().toSet()
+    }
+    fun setPauseApps(c: Context, s: Set<String>) = sp(c).edit().putString("pa", JSONArray(s.toList()).toString()).apply()
+    fun pausedPkg(c: Context) = sp(c).getString("paused", "") ?: ""
+    fun setPaused(c: Context, p: String) = sp(c).edit().putString("paused", p).apply()
+    /** True if any goal / limit / schedule touches this app, so it can't be exempted from blocking. */
+    fun ruleTouches(c: Context, p: String) =
+        goals(c).any { p in it.apps } || limits(c).any { it.pkg == p } || scheds(c).any { s -> s.entries.any { it.pkg == p } }
+
+    fun theme(c: Context) = sp(c).getInt("theme", 0)
 
     // ---- rule engine ----
     fun trackKeys(c: Context, p: String, now: LocalDateTime): List<String> {

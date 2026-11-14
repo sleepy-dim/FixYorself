@@ -65,14 +65,32 @@ import androidx.activity.compose.setContent
 import androidx.compose.ui.graphics.vector.ImageVector
 
 class MainActivity : ComponentActivity() {
+    private val startKey = mutableIntStateOf(0)
+
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
+        Pal.mode = Store.theme(this)
+        Pal.sysDark = (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
+            android.content.res.Configuration.UI_MODE_NIGHT_YES
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
         )
         ReminderReceiver.ensure(this)
-        setContent { LifeTheme { Root() } }
+        setContent { LifeTheme { Root(startKey.intValue) } }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        Pal.mode = Store.theme(this)
+        Compat.sync(this)
+        startKey.intValue++
+    }
+
+    /** Free the app-icon cache while in the background; the blocker keeps running without it. */
+    override fun onStop() {
+        super.onStop()
+        AppRepo.clear()
     }
 }
 
@@ -83,25 +101,40 @@ sealed interface Page {
     class SchedEdit(val id: String?) : Page
     class QuietEdit(val id: String?) : Page
     class HabitEdit(val id: String?) : Page
+    class TargetEdit(val id: String?) : Page
 }
 
 @Composable
-fun Root() {
+fun Root(startKey: Int) {
     val c = LocalContext.current
     var ver by remember { mutableIntStateOf(0) }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var tab by remember { mutableIntStateOf(0) }
+    var sub by remember { mutableIntStateOf(0) }
     var page by remember { mutableStateOf<Page?>(null) }
 
-    LaunchedEffect(Unit) {
+    // Runs every time the app comes to the front: refresh day rollover, icons and permission status.
+    LaunchedEffect(startKey) {
         Store.rollover(c)
         AppRepo.load(c)
         ver++
+    }
+    // Slow clock: once a second only while a focus countdown is visible, otherwise every 10 s.
+    LaunchedEffect(Unit) {
         var day = Store.today()
         while (true) {
-            delay(1000); now = System.currentTimeMillis()
+            delay(if (Store.focusUntil(c) > System.currentTimeMillis()) 1000L else 10000L)
+            now = System.currentTimeMillis()
             if (Store.today() != day) { day = Store.today(); Store.rollover(c); ver++ }
         }
+    }
+    // Status-bar icons follow the theme.
+    val dark = Pal.dark
+    LaunchedEffect(dark) {
+        (c as? ComponentActivity)?.enableEdgeToEdge(
+            statusBarStyle = if (dark) SystemBarStyle.dark(android.graphics.Color.TRANSPARENT) else SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = if (dark) SystemBarStyle.dark(android.graphics.Color.TRANSPARENT) else SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT)
+        )
     }
 
     val bump: () -> Unit = { ver++ }
@@ -119,14 +152,15 @@ fun Root() {
                 is Page.SchedEdit -> SchedEditor(p.id, close)
                 is Page.QuietEdit -> QuietEditor(p.id, close)
                 is Page.HabitEdit -> HabitEditor(p.id, close)
+                is Page.TargetEdit -> TargetEditor(p.id, close)
             }
         } else {
             val tabs: List<Pair<String, ImageVector>> = listOf(
-                "Today" to Icons.Default.Home, "Habits" to Icons.Default.CheckCircle, "Limits" to Icons.Default.Lock,
+                "Today" to Icons.Default.Home, "Progress" to Icons.Default.CheckCircle, "Limits" to Icons.Default.Lock,
                 "Schedules" to Icons.Default.DateRange, "Settings" to Icons.Default.Settings)
             val fab: Pair<String, Page>? = when (tab) {
                 0 -> "New goal" to Page.NewGoal
-                1 -> "New habit" to Page.HabitEdit(null)
+                1 -> if (sub == 0) "New habit" to Page.HabitEdit(null) else "New target" to Page.TargetEdit(null)
                 2 -> "Limit an app" to Page.NewLimit
                 3 -> "New schedule" to Page.SchedEdit(null)
                 else -> null
@@ -151,7 +185,7 @@ fun Root() {
                                     icon = { Icon(icon, null) },
                                     label = { Text(label, fontSize = 11.sp, maxLines = 1) },
                                     colors = NavigationBarItemDefaults.colors(
-                                        selectedIconColor = Pal.accent, selectedTextColor = Color.White,
+                                        selectedIconColor = Pal.accent, selectedTextColor = Pal.ink,
                                         indicatorColor = Pal.accent.copy(alpha = 0.18f),
                                         unselectedIconColor = Pal.muted, unselectedTextColor = Pal.muted)
                                 )
@@ -163,7 +197,7 @@ fun Root() {
                 Box(Modifier.padding(pad).fillMaxSize()) {
                     when (tab) {
                         0 -> TodayScreen(ver, now, go, bump)
-                        1 -> HabitsScreen(ver, now, go, bump)
+                        1 -> HabitsScreen(ver, now, sub, { sub = it }, go, bump)
                         2 -> LimitsScreen(ver, now, go, bump)
                         3 -> SchedulesScreen(ver, now, go, bump)
                         else -> SettingsScreen(ver, now, go, bump)

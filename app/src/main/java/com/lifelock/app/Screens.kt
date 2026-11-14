@@ -3,7 +3,10 @@ package com.lifelock.app
 import android.Manifest
 import android.app.DatePickerDialog
 import android.app.TimePickerDialog
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
+import androidx.compose.ui.text.font.FontFamily
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -72,7 +75,7 @@ fun SetupRow(ok: Boolean, title: String, onClick: () -> Unit) {
     Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(10.dp).clip(CircleShape).background(if (ok) Pal.green else Pal.orange))
         Spacer(Modifier.width(12.dp))
-        Text(title, color = Color.White, modifier = Modifier.weight(1f))
+        Text(title, color = Pal.ink, modifier = Modifier.weight(1f))
         if (!ok) Text("Enable", color = Pal.accent, fontWeight = FontWeight.Bold,
             modifier = Modifier.clip(RoundedCornerShape(50)).background(Pal.accent.copy(alpha = 0.16f)).clickable(onClick = onClick)
                 .padding(horizontal = 14.dp, vertical = 7.dp))
@@ -128,7 +131,7 @@ fun TodayScreen(ver: Int, now: Long, go: (Page) -> Unit, bump: () -> Unit) {
             Column(Modifier.padding(top = 8.dp)) {
                 Text(LocalDate.now().format(DateTimeFormatter.ofPattern("EEEE, d MMMM")).uppercase(), fontSize = 11.sp,
                     fontWeight = FontWeight.Bold, letterSpacing = 1.4.sp, color = Pal.accent)
-                Text(greet, fontSize = 32.sp, fontWeight = FontWeight.ExtraBold, color = Color.White)
+                Text(greet, fontSize = 32.sp, fontWeight = FontWeight.ExtraBold, color = Pal.ink)
             }
         }
         item { SetupCard(now) }
@@ -211,7 +214,7 @@ fun HabitRow(h: Habit, t: Long, ver: Int, bump: () -> Unit) {
         IconChip(h.emoji, col, 44.dp)
         Spacer(Modifier.width(14.dp))
         Column(Modifier.weight(1f)) {
-            Text(h.name, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+            Text(h.name, color = Pal.ink, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
             if (h.kind == 0) Sub(if (met) "Done" else "To do")
             else {
                 Sub("$v / ${h.target} ${h.unit}")
@@ -240,7 +243,7 @@ fun GoalCard(g: Goal, t: Long, bump: () -> Unit) {
                 Sub(if (active) "${g.end - t} days left · until ${LocalDate.ofEpochDay(g.end)}" else "Completed 🎉")
             }
             Column(horizontalAlignment = Alignment.End) {
-                Text("🔥 ${Store.liveStreak(g)}", fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, color = Color.White)
+                Text("🔥 ${Store.liveStreak(g)}", fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, color = Pal.ink)
                 Sub("best ${g.best}")
             }
         }
@@ -335,9 +338,9 @@ fun SchedulesScreen(ver: Int, now: Long, go: (Page) -> Unit, bump: () -> Unit) {
                 }
                 Spacer(Modifier.height(14.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(hhmm(s.start), fontSize = 28.sp, fontWeight = FontWeight.ExtraBold, color = Color.White)
+                    Text(hhmm(s.start), fontSize = 28.sp, fontWeight = FontWeight.ExtraBold, color = Pal.ink)
                     Text("  →  ", fontSize = 18.sp, color = Pal.muted)
-                    Text(hhmm(s.end), fontSize = 28.sp, fontWeight = FontWeight.ExtraBold, color = Color.White)
+                    Text(hhmm(s.end), fontSize = 28.sp, fontWeight = FontWeight.ExtraBold, color = Pal.ink)
                 }
                 Spacer(Modifier.height(12.dp))
                 DayDots(s.days, tint)
@@ -358,7 +361,7 @@ fun StatusLine(ok: Boolean, text: String) {
     Row(Modifier.padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(10.dp).clip(CircleShape).background(if (ok) Pal.green else Pal.red))
         Spacer(Modifier.width(12.dp))
-        Text(text, color = Color.White, modifier = Modifier.weight(1f))
+        Text(text, color = Pal.ink, modifier = Modifier.weight(1f))
         Text(if (ok) "On" else "Off", color = if (ok) Pal.green else Pal.red, fontWeight = FontWeight.SemiBold)
     }
 }
@@ -376,6 +379,21 @@ fun SettingsScreen(ver: Int, now: Long, go: (Page) -> Unit, bump: () -> Unit) {
                 StatusLine(Perm.guard(c), "Blocking engine")
                 StatusLine(Perm.overlay(c), "Block screen over apps")
                 StatusLine(Perm.notif(c), "Notifications")
+                Sub(if (GuardService.inst == null) "Engine is not running."
+                    else "Since it started ${(System.currentTimeMillis() - GuardService.startedAt) / 60000} min ago: ${GuardService.events} app switches, ${GuardService.ticks} timer wake-ups.",
+                    Modifier.padding(top = 12.dp))
+            }
+        }
+        item { SectionLabel("Appearance") }
+        item {
+            Surf {
+                Title("Theme")
+                Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(0 to "System", 1 to "Dark", 2 to "Black (AMOLED)", 3 to "Light").forEach { (m, l) ->
+                        Pill(l, Pal.mode == m) { Pal.mode = m; Store.setInt(c, "theme", m); bump() }
+                    }
+                }
+                Sub("Black switches off the pixels on an AMOLED screen like the S24's, which saves a little battery.", Modifier.padding(top = 10.dp))
             }
         }
         item { SectionLabel("Passes") }
@@ -433,6 +451,57 @@ fun SettingsScreen(ver: Int, now: Long, go: (Page) -> Unit, bump: () -> Unit) {
                 }
             }
             item { Btn("+ Add quiet time", filled = false) { go(Page.QuietEdit(null)) } }
+        }
+        item { SectionLabel("Compatibility mode") }
+        item {
+            val pa = Store.pauseApps(c).toList()
+            var picker by remember { mutableStateOf(false) }
+            Surf {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconChip("🛡️", Pal.accent2)
+                    Spacer(Modifier.width(14.dp))
+                    Column {
+                        Title("Pause blocking in chosen apps")
+                        Sub("For apps that refuse to run while an accessibility service is on, like banking apps. LifeLock switches itself off while you're in them and back on when you leave.")
+                    }
+                }
+                StatusLine(Compat.secureOk(c), "Secure-settings permission (one-time ADB)")
+                StatusLine(Compat.usageOk(c), "Usage access")
+                StatusLine(WatchService.alive, "Helper service running")
+                if (!Compat.secureOk(c)) {
+                    Spacer(Modifier.height(12.dp))
+                    Text(Compat.CMD, fontFamily = FontFamily.Monospace, fontSize = 12.sp, color = Pal.text2,
+                        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Pal.card2).padding(12.dp))
+                    Sub("Run this once from a computer with USB debugging on. On Samsung, switch off Auto Blocker first.", Modifier.padding(top = 8.dp))
+                    Btn("Copy command", Modifier.padding(top = 10.dp), filled = false) {
+                        c.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("adb", Compat.CMD))
+                        toast(c, "Copied")
+                    }
+                }
+                if (!Compat.usageOk(c)) Btn("Grant usage access", Modifier.padding(top = 10.dp), filled = false) {
+                    Perm.open(c, Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
+                }
+                if (pa.isNotEmpty()) Spacer(Modifier.height(10.dp))
+                pa.forEach { p ->
+                    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        AppIcon(p, 40.dp)
+                        Spacer(Modifier.width(12.dp))
+                        Text(AppRepo.label(p), color = Pal.ink, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                        Pill("Open", true) { Compat.openPaused(c, p) }
+                        IconButton(onClick = { Store.setPauseApps(c, Store.pauseApps(c) - p); Compat.sync(c); bump() }) {
+                            Icon(Icons.Default.Close, null, tint = Pal.muted)
+                        }
+                    }
+                }
+                Btn(if (pa.isEmpty()) "Choose apps" else "Change apps", Modifier.padding(top = 10.dp), filled = false) { picker = true }
+                Sub("Tip: use the Open button here to launch the app. It pauses blocking before the app starts, which is the most reliable way.",
+                    Modifier.padding(top = 10.dp))
+            }
+            if (picker) AppPicker("Pause blocking in…", true, pa.toSet(), { sel ->
+                val ok = sel.filter { !Store.ruleTouches(c, it) }.toSet()
+                if (ok.size < sel.size) toast(c, "Apps that your goals, limits or schedules block can't be exempt.")
+                Store.setPauseApps(c, ok); Compat.sync(c); picker = false; bump()
+            }, { picker = false })
         }
         item { SectionLabel("Motivation") }
         item {

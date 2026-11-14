@@ -139,5 +139,8 @@ class HabitActionReceiver : BroadcastReceiver() {
 }
 
 class BootReceiver : BroadcastReceiver() {
-    override fun onReceive(c: Context, i: Intent?) { ReminderReceiver.ensure(c) }
+    override fun onReceive(c: Context, i: Intent?) {
+        ReminderReceiver.ensure(c)
+        Compat.sync(c)
+    }
 }

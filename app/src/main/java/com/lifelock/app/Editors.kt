@@ -64,7 +64,7 @@ fun GoalEditor(onClose: () -> Unit) {
                 .apply { datePicker.minDate = System.currentTimeMillis() + 86400000L }.show()
         }) {
             Sub("Keep going until")
-            Text(end.format(DateTimeFormatter.ofPattern("EEE, d MMM yyyy")), fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color.White)
+            Text(end.format(DateTimeFormatter.ofPattern("EEE, d MMM yyyy")), fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Pal.ink)
         }
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf("1 week" to 7L, "2 weeks" to 14L, "1 month" to 30L, "3 months" to 90L).forEach { (l, d) ->
@@ -145,7 +145,7 @@ fun FocusEditor(onClose: () -> Unit) {
     if (picker) AppPicker("Allowed during focus", true, apps, { apps = it; Store.setFocusApps(c, it); picker = false }, { picker = false })
     if (confirm) AlertDialog(
         onDismissRequest = { confirm = false }, containerColor = Pal.card,
-        title = { Text("Lock for $mins minutes?", color = Color.White) },
+        title = { Text("Lock for $mins minutes?", color = Pal.ink) },
         text = { Text("You will not be able to cancel this.", color = Pal.muted) },
         confirmButton = { TextButton(onClick = { Store.startFocus(c, mins); onClose() }) { Text("Lock me in") } },
         dismissButton = { TextButton(onClick = { confirm = false }) { Text("Not now") } }
@@ -197,7 +197,7 @@ fun SchedEditor(id: String?, onClose: () -> Unit) {
                 AppIcon(e.pkg, 40.dp)
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(AppRepo.label(e.pkg), color = Color.White, fontWeight = FontWeight.SemiBold)
+                    Text(AppRepo.label(e.pkg), color = Pal.ink, fontWeight = FontWeight.SemiBold)
                     Sub(if (e.cap > 0) "${e.cap} min per day · tap to change" else if (allowOnly) "No time cap · tap to set" else "Blocked completely · tap to allow some time")
                 }
                 IconButton(onClick = { entries = entries - e }) { Icon(Icons.Default.Close, null, tint = Pal.muted) }
@@ -226,7 +226,7 @@ fun SchedEditor(id: String?, onClose: () -> Unit) {
     val cf = capFor
     if (cf != null) AlertDialog(
         onDismissRequest = { capFor = null }, containerColor = Pal.card,
-        title = { Text(AppRepo.label(cf), color = Color.White) },
+        title = { Text(AppRepo.label(cf), color = Pal.ink) },
         text = {
             Column {
                 Sub("Daily time allowed inside this schedule. None = no cap (blocked completely in 'Block' mode).")

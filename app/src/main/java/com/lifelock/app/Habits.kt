@@ -69,30 +69,42 @@ fun everyLabel(m: Int) = if (m >= 1440) "day" else if (m % 60 == 0) "${m / 60} h
 
 // ---------------------------------------------------------------- list screen
 @Composable
-fun HabitsScreen(ver: Int, now: Long, go: (Page) -> Unit, bump: () -> Unit) {
+fun HabitsScreen(ver: Int, now: Long, sub: Int, onSub: (Int) -> Unit, go: (Page) -> Unit, bump: () -> Unit) {
     val c = LocalContext.current
     val t = Store.today()
     val hs = Store.habits(c)
+    val trs = Store.tracks(c)
     val due = hs.filter { Store.hActive(it, t) }
     val done = due.count { Store.met(it, Store.hLog(c, it.id, t)) }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 120.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        item { ScreenTitle("Habits", "Daily targets with their own reminders.") }
-        if (due.isNotEmpty()) item {
-            Surf {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Ring(done.toFloat() / due.size, 72.dp, 8.dp, Pal.green) {
-                        Text("${(100 * done / due.size)}%", fontWeight = FontWeight.ExtraBold, color = Color.White, fontSize = 16.sp)
-                    }
-                    Spacer(Modifier.width(16.dp))
-                    Column {
-                        Title("$done of ${due.size} done today", size = 18)
-                        Sub(if (done == due.size) "Perfect day. Keep it going 🔥" else "${due.size - done} to go")
+        item { ScreenTitle("Progress", if (sub == 0) "Daily targets with their own reminders." else "Work up or down to a number: weight, push-ups, savings…") }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Pill("Daily habits", sub == 0) { onSub(0) }
+                Pill("Targets", sub == 1) { onSub(1) }
+            }
+        }
+        if (sub == 0) {
+            if (due.isNotEmpty()) item {
+                Surf {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Ring(done.toFloat() / due.size, 72.dp, 8.dp, Pal.green) {
+                            Text("${(100 * done / due.size)}%", fontWeight = FontWeight.ExtraBold, color = Pal.ink, fontSize = 16.sp)
+                        }
+                        Spacer(Modifier.width(16.dp))
+                        Column {
+                            Title("$done of ${due.size} done today", size = 18)
+                            Sub(if (done == due.size) "Perfect day. Keep it going 🔥" else "${due.size - done} to go")
+                        }
                     }
                 }
             }
+            if (hs.isEmpty()) item { EmptyState("🌱", "No habits yet", "Start from a template: Drink water, Walk break, Calories, Steps…") }
+            items(hs, key = { it.id }) { h -> HabitCard(h, t, ver, go, bump) }
+        } else {
+            if (trs.isEmpty()) item { EmptyState("📈", "No targets yet", "Track weight, push-ups, running distance or savings. The app picks the +/− jumps for you.") }
+            items(trs, key = { it.id }) { tr -> TargetCard(tr, ver, go, bump) }
         }
-        if (hs.isEmpty()) item { EmptyState("🌱", "No habits yet", "Start from a template: Drink water, Walk break, Calories, Steps…") }
-        items(hs, key = { it.id }) { h -> HabitCard(h, t, ver, go, bump) }
     }
 }
 
@@ -139,7 +151,7 @@ fun HabitCard(h: Habit, t: Long, ver: Int, go: (Page) -> Unit, bump: () -> Unit)
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(LocalDate.ofEpochDay(d).dayOfWeek.name.take(1), fontSize = 10.sp, fontWeight = FontWeight.Bold,
-                        color = if (d == t) Color.White else Pal.muted)
+                        color = if (d == t) Pal.ink else Pal.muted)
                 }
             }
         }
@@ -163,7 +175,7 @@ fun HabitCard(h: Habit, t: Long, ver: Int, go: (Page) -> Unit, bump: () -> Unit)
     }
     if (custom) AlertDialog(
         onDismissRequest = { custom = false }, containerColor = Pal.card,
-        title = { Text("Add to ${h.name}", color = Color.White) },
+        title = { Text("Add to ${h.name}", color = Pal.ink) },
         text = {
             OutlinedTextField(value = txt, onValueChange = { txt = it.filter { ch -> ch.isDigit() }.take(6) }, singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),

@@ -68,32 +68,40 @@ import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
 
 object Pal {
-    val bg = Color(0xFF0A0B10)
-    val nav = Color(0xF20D0F16)
-    val glow = Color(0xFF2A1F63)
-    val card = Color(0xFF14161F)
-    val card2 = Color(0xFF1D202C)
-    val line = Color(0x1FFFFFFF)
+    var mode by mutableIntStateOf(0)          // 0 system, 1 dark, 2 black (AMOLED), 3 light
+    var sysDark by mutableStateOf(true)
+    val dark: Boolean get() = when (mode) { 1, 2 -> true; 3 -> false; else -> sysDark }
+
+    val bg: Color get() = if (!dark) Color(0xFFF3F4FA) else if (mode == 2) Color.Black else Color(0xFF0A0B10)
+    val nav: Color get() = if (!dark) Color(0xF2FFFFFF) else if (mode == 2) Color(0xF2000000) else Color(0xF20D0F16)
+    val glow: Color get() = if (!dark) Color(0xFFDAD3FF) else if (mode == 2) Color(0xFF140E33) else Color(0xFF2A1F63)
+    val card: Color get() = if (!dark) Color.White else if (mode == 2) Color(0xFF0D0E13) else Color(0xFF14161F)
+    val card2: Color get() = if (!dark) Color(0xFFECEEF6) else if (mode == 2) Color(0xFF181A22) else Color(0xFF1D202C)
+    val line: Color get() = if (!dark) Color(0x16000000) else Color(0x1FFFFFFF)
+    val muted: Color get() = if (!dark) Color(0xFF6B7287) else Color(0xFF8D94A8)
+    val text2: Color get() = if (!dark) Color(0xFF3A4054) else Color(0xFFC7CCDA)
+    val ink: Color get() = if (!dark) Color(0xFF12141C) else Color.White
+
     val accent = Color(0xFF7C5CFF)
     val accent2 = Color(0xFF4F8CFF)
     val green = Color(0xFF2DD4A0)
     val red = Color(0xFFFF6B6B)
     val orange = Color(0xFFFFA24C)
-    val muted = Color(0xFF8D94A8)
-    val text2 = Color(0xFFC7CCDA)
 }
 
 @Composable
 fun LifeTheme(content: @Composable () -> Unit) {
-    MaterialTheme(
-        colorScheme = darkColorScheme(
-            primary = Pal.accent, onPrimary = Color.White, secondary = Pal.green, error = Pal.red,
-            background = Pal.bg, onBackground = Color.White, surface = Pal.card, onSurface = Color.White,
-            surfaceVariant = Pal.card2, onSurfaceVariant = Pal.muted,
-            outline = Color(0xFF353A4D), outlineVariant = Pal.line
-        ),
-        content = content
-    )
+    val sys = isSystemInDarkTheme()
+    SideEffect { if (Pal.sysDark != sys) Pal.sysDark = sys }
+    val scheme = if (Pal.dark) darkColorScheme(
+        primary = Pal.accent, onPrimary = Color.White, secondary = Pal.green, error = Pal.red,
+        background = Pal.bg, onBackground = Pal.ink, surface = Pal.card, onSurface = Pal.ink,
+        surfaceVariant = Pal.card2, onSurfaceVariant = Pal.muted, outline = Color(0xFF353A4D), outlineVariant = Pal.line)
+    else lightColorScheme(
+        primary = Pal.accent, onPrimary = Color.White, secondary = Pal.green, error = Pal.red,
+        background = Pal.bg, onBackground = Pal.ink, surface = Pal.card, onSurface = Pal.ink,
+        surfaceVariant = Pal.card2, onSurfaceVariant = Pal.muted, outline = Color(0xFFB9BECE), outlineVariant = Pal.line)
+    MaterialTheme(colorScheme = scheme, content = content)
 }
 
 fun toast(c: Context, s: String) = Toast.makeText(c, s, Toast.LENGTH_LONG).show()
@@ -109,7 +117,7 @@ fun Surf(modifier: Modifier = Modifier, onClick: (() -> Unit)? = null, brush: Br
 }
 
 @Composable
-fun Title(t: String, color: Color = Color.White, size: Int = 17) =
+fun Title(t: String, color: Color = Pal.ink, size: Int = 17) =
     Text(t, fontSize = size.sp, fontWeight = FontWeight.SemiBold, color = color)
 
 @Composable
@@ -124,7 +132,7 @@ fun SectionLabel(t: String) =
 @Composable
 fun ScreenTitle(t: String, sub: String? = null) {
     Column(Modifier.padding(top = 8.dp)) {
-        Text(t, fontSize = 32.sp, fontWeight = FontWeight.ExtraBold, color = Color.White)
+        Text(t, fontSize = 32.sp, fontWeight = FontWeight.ExtraBold, color = Pal.ink)
         if (sub != null) Sub(sub, Modifier.padding(top = 4.dp))
     }
 }
@@ -153,7 +161,8 @@ fun Btn(t: String, modifier: Modifier = Modifier, filled: Boolean = true, color:
         m.background(Brush.horizontalGradient(if (enabled) listOf(color, to) else listOf(color.copy(alpha = 0.35f), color.copy(alpha = 0.35f))))
     } else m.background(Pal.card2).border(1.dp, Pal.line, shape)
     Box(m.clickable(enabled = enabled, onClick = onClick), contentAlignment = Alignment.Center) {
-        Text(t, color = if (enabled) Color.White else Color.White.copy(alpha = 0.6f), fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+        val tc = if (filled) Color.White else Pal.ink
+        Text(t, color = if (enabled) tc else tc.copy(alpha = 0.6f), fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
     }
 }
 
@@ -203,14 +212,14 @@ fun TimeBtn(label: String, min: Int, modifier: Modifier = Modifier, onPick: (Int
         .clickable { TimePickerDialog(c, { _, hh, mm -> onPick(hh * 60 + mm) }, min / 60, min % 60, true).show() }
         .padding(horizontal = 14.dp, vertical = 12.dp)) {
         Text(label.uppercase(), fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.2.sp, color = Pal.muted)
-        Text(hhmm(min), fontSize = 26.sp, fontWeight = FontWeight.ExtraBold, color = Color.White)
+        Text(hhmm(min), fontSize = 26.sp, fontWeight = FontWeight.ExtraBold, color = Pal.ink)
     }
 }
 
 @Composable
 fun RoundBtn(t: String, onClick: () -> Unit) {
     Box(Modifier.size(38.dp).clip(CircleShape).background(Pal.card2).border(1.dp, Pal.line, CircleShape).clickable(onClick = onClick),
-        contentAlignment = Alignment.Center) { Text(t, color = Color.White, fontSize = 20.sp) }
+        contentAlignment = Alignment.Center) { Text(t, color = Pal.ink, fontSize = 20.sp) }
 }
 
 @Composable
@@ -218,7 +227,7 @@ fun Stepper(label: String, value: Int, min: Int, max: Int, suffix: String = "", 
     Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(label, color = Pal.text2, modifier = Modifier.weight(1f))
         RoundBtn("−") { onChange((value - step).coerceAtLeast(min)) }
-        Text(if (value == 0 && suffix.isNotEmpty()) "None" else "$value$suffix", color = Color.White, fontWeight = FontWeight.Bold,
+        Text(if (value == 0 && suffix.isNotEmpty()) "None" else "$value$suffix", color = Pal.ink, fontWeight = FontWeight.Bold,
             textAlign = TextAlign.Center, modifier = Modifier.width(84.dp))
         RoundBtn("+") { onChange((value + step).coerceAtMost(max)) }
     }
@@ -280,8 +289,8 @@ fun EditorPage(title: String, onBack: () -> Unit, content: @Composable ColumnSco
     BackHandler(onBack = onBack)
     Column(Modifier.fillMaxSize().systemBarsPadding().imePadding()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, null, tint = Color.White) }
-            Text(title, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, color = Color.White)
+            IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, null, tint = Pal.ink) }
+            Text(title, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, color = Pal.ink)
         }
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).padding(bottom = 28.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp), content = content)
@@ -296,6 +305,7 @@ object AppRepo {
     private val map = ConcurrentHashMap<String, AppInfo>()
     fun get(p: String): AppInfo? = map[p]
     fun label(p: String): String = map[p]?.label ?: p
+    fun clear() { list = null; map.clear() }
 
     suspend fun load(c: Context): List<AppInfo> = withContext(Dispatchers.Default) {
         val cached = list
@@ -321,7 +331,7 @@ fun AppIcon(pkg: String, size: Dp = 40.dp) {
         Image(bitmap = info.icon, contentDescription = null, modifier = Modifier.size(size).clip(RoundedCornerShape(size / 4)))
     } else {
         Box(Modifier.size(size).clip(RoundedCornerShape(size / 4)).background(Pal.card2), contentAlignment = Alignment.Center) {
-            Text(pkg.substringAfterLast('.').take(1).uppercase(), color = Color.White, fontWeight = FontWeight.Bold)
+            Text(pkg.substringAfterLast('.').take(1).uppercase(), color = Pal.ink, fontWeight = FontWeight.Bold)
         }
     }
 }
@@ -346,8 +356,8 @@ fun AppPicker(title: String, multi: Boolean, initial: Set<String>, onDone: (Set<
         Surface(Modifier.fillMaxSize(), color = Pal.bg) {
             Column {
                 Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, null, tint = Color.White) }
-                    Text(title, fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, color = Color.White, modifier = Modifier.weight(1f))
+                    IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, null, tint = Pal.ink) }
+                    Text(title, fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, color = Pal.ink, modifier = Modifier.weight(1f))
                     if (multi) Text("Done (${sel.size})", color = Color.White, fontWeight = FontWeight.Bold,
                         modifier = Modifier.padding(end = 8.dp).clip(RoundedCornerShape(50)).background(Pal.accent)
                             .clickable { onDone(sel) }.padding(horizontal = 16.dp, vertical = 9.dp))
@@ -380,7 +390,7 @@ fun AppPicker(title: String, multi: Boolean, initial: Set<String>, onDone: (Set<
                             ) {
                                 AppIcon(a.pkg, 44.dp)
                                 Spacer(Modifier.width(14.dp))
-                                Text(a.label, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+                                Text(a.label, color = Pal.ink, fontSize = 16.sp, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
                                 if (multi) Checkbox(checked = on, onCheckedChange = null, colors = CheckboxDefaults.colors(checkedColor = Pal.accent))
                             }
                         }
