@@ -154,6 +154,7 @@ class WatchService : Service() {
     private fun restore() {
         target = ""
         h.removeCallbacks(poll)
+        Store.flushUsage(this, true)
         Store.setPaused(this, "")
         Compat.enableGuard(this)
     }
@@ -173,10 +174,11 @@ class WatchService : Service() {
                 }
             } catch (ex: Exception) { }
             lastQ = now
+            Store.bump(this@WatchService, "polls")
             away = if (fg != target) away + 1 else 0
             val off = screenOff || !getSystemService(PowerManager::class.java).isInteractive
             if (off || away >= 2 || now - since > 3600000L) { restore(); return }
-            h.postDelayed(this, 1000L)
+            h.postDelayed(this, 1500L)
         }
     }
 }

@@ -68,16 +68,16 @@ import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
 
 object Pal {
-    var mode by mutableIntStateOf(0)          // 0 system, 1 dark, 2 black (AMOLED), 3 light
+    var mode by mutableIntStateOf(1)          // 1 Default (navy), 4 Dark (black + purple glow), 2 AMOLED (pure black), 3 Light, 0 System
     var sysDark by mutableStateOf(true)
-    val dark: Boolean get() = when (mode) { 1, 2 -> true; 3 -> false; else -> sysDark }
+    val dark: Boolean get() = when (mode) { 1, 2, 4 -> true; 3 -> false; else -> sysDark }
 
-    val bg: Color get() = if (!dark) Color(0xFFF3F4FA) else if (mode == 2) Color.Black else Color(0xFF0A0B10)
-    val nav: Color get() = if (!dark) Color(0xF2FFFFFF) else if (mode == 2) Color(0xF2000000) else Color(0xF20D0F16)
-    val glow: Color get() = if (!dark) Color(0xFFDAD3FF) else if (mode == 2) Color(0xFF140E33) else Color(0xFF2A1F63)
-    val card: Color get() = if (!dark) Color.White else if (mode == 2) Color(0xFF0D0E13) else Color(0xFF14161F)
-    val card2: Color get() = if (!dark) Color(0xFFECEEF6) else if (mode == 2) Color(0xFF181A22) else Color(0xFF1D202C)
-    val line: Color get() = if (!dark) Color(0x16000000) else Color(0x1FFFFFFF)
+    val bg: Color get() = if (!dark) Color(0xFFF3F4FA) else if (mode == 2 || mode == 4) Color.Black else Color(0xFF0A0B10)
+    val nav: Color get() = if (!dark) Color(0xF2FFFFFF) else if (mode == 2) Color.Black else if (mode == 4) Color(0xF2000000) else Color(0xF20D0F16)
+    val glow: Color get() = if (!dark) Color(0xFFDAD3FF) else if (mode == 2) Color.Transparent else if (mode == 4) Color(0xFF140E33) else Color(0xFF2A1F63)
+    val card: Color get() = if (!dark) Color.White else if (mode == 2) Color(0xFF060607) else if (mode == 4) Color(0xFF0D0E13) else Color(0xFF14161F)
+    val card2: Color get() = if (!dark) Color(0xFFECEEF6) else if (mode == 2) Color(0xFF111113) else if (mode == 4) Color(0xFF181A22) else Color(0xFF1D202C)
+    val line: Color get() = if (!dark) Color(0x16000000) else if (mode == 2) Color(0x33FFFFFF) else Color(0x1FFFFFFF)
     val muted: Color get() = if (!dark) Color(0xFF6B7287) else Color(0xFF8D94A8)
     val text2: Color get() = if (!dark) Color(0xFF3A4054) else Color(0xFFC7CCDA)
     val ink: Color get() = if (!dark) Color(0xFF12141C) else Color.White

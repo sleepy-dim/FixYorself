@@ -46,6 +46,8 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -273,13 +275,29 @@ fun GoalCard(g: Goal, t: Long, bump: () -> Unit) {
 
 // ---------------------------------------------------------------- LIMITS
 @Composable
-fun LimitsScreen(ver: Int, now: Long, go: (Page) -> Unit, bump: () -> Unit) {
+fun LimitsScreen(ver: Int, now: Long, sub: Int, onSub: (Int) -> Unit, go: (Page) -> Unit, bump: () -> Unit) {
     val c = LocalContext.current
     val limits = Store.limits(c)
+    var range by remember { mutableIntStateOf(0) }
+    val data by produceState<Insights?>(null, sub, now / 60000L) {
+        if (sub == 1 && Compat.usageOk(c)) value = withContext(Dispatchers.Default) { UsageCalc.load(c) }
+    }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 120.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        item { ScreenTitle("Limits", "A daily time budget per app. When it's gone, the app is locked until tomorrow.") }
-        if (limits.isEmpty()) item { EmptyState("⏳", "No limits yet", "Give Instagram, YouTube or any app a daily budget.") }
-        items(limits, key = { it.pkg }) { l -> LimitCard(l, now, bump) }
+        item {
+            ScreenTitle(if (sub == 0) "Limits" else "Insights",
+                if (sub == 0) "A daily time budget per app. When it's gone, the app is locked until tomorrow."
+                else "Where your time actually goes. Everything is read on your phone.")
+        }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Pill("Limits", sub == 0) { onSub(0) }
+                Pill("Insights", sub == 1) { onSub(1) }
+            }
+        }
+        if (sub == 0) {
+            if (limits.isEmpty()) item { EmptyState("⏳", "No limits yet", "Give Instagram, YouTube or any app a daily budget. Not sure which? Check Insights.") }
+            items(limits, key = { it.pkg }) { l -> LimitCard(l, now, bump) }
+        } else insightsItems(c, data, range, { range = it }, bump)
     }
 }
 
@@ -389,11 +407,11 @@ fun SettingsScreen(ver: Int, now: Long, go: (Page) -> Unit, bump: () -> Unit) {
             Surf {
                 Title("Theme")
                 Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(0 to "System", 1 to "Dark", 2 to "Black (AMOLED)", 3 to "Light").forEach { (m, l) ->
+                    listOf(1 to "Default", 4 to "Dark", 2 to "AMOLED", 3 to "Light", 0 to "System").forEach { (m, l) ->
                         Pill(l, Pal.mode == m) { Pal.mode = m; Store.setInt(c, "theme", m); bump() }
                     }
                 }
-                Sub("Black switches off the pixels on an AMOLED screen like the S24's, which saves a little battery.", Modifier.padding(top = 10.dp))
+                Sub("Default is the deep-navy look. Dark is black with a purple glow. AMOLED is pure #000000 with no glow, so pixels are fully off on your S24's screen.", Modifier.padding(top = 10.dp))
             }
         }
         item { SectionLabel("Passes") }
@@ -438,7 +456,7 @@ fun SettingsScreen(ver: Int, now: Long, go: (Page) -> Unit, bump: () -> Unit) {
                 }
             }
         }
-        if (rem.on || Store.habits(c).any { it.remOn }) {
+        if (rem.on || Store.habits(c).any { it.remOn } || Store.tracks(c).any { it.remOn }) {
             item { SectionLabel("Quiet times") }
             item { Sub("No goal or habit reminders on these days and times, e.g. school or work.", Modifier.padding(horizontal = 4.dp)) }
             items(quiets, key = { it.id }) { q ->
@@ -451,6 +469,84 @@ fun SettingsScreen(ver: Int, now: Long, go: (Page) -> Unit, bump: () -> Unit) {
                 }
             }
             item { Btn("+ Add quiet time", filled = false) { go(Page.QuietEdit(null)) } }
+        }
+        item { SectionLabel("Diagnostics") }
+        item {
+            val day = Store.today()
+            val rows = listOf("events" to "App switches seen", "ticks" to "Timer wake-ups", "blocks" to "Block screens shown",
+                "alarms" to "Reminder alarms", "notifs" to "Notifications sent", "polls" to "Compatibility checks")
+            Surf {
+                Title("Activity: today / yesterday")
+                rows.forEach { (k, l) ->
+                    Row(Modifier.fillMaxWidth().padding(top = 10.dp)) {
+                        Text(l, color = Pal.text2, modifier = Modifier.weight(1f))
+                        Text("${Store.diag(c, k, day)} / ${Store.diag(c, k, day - 1)}", color = Pal.ink, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+                Sub("Low numbers mean LifeLock is mostly asleep. If your battery page still shows it high, send me this report.", Modifier.padding(top = 12.dp))
+                Btn("Copy report", Modifier.padding(top = 12.dp), filled = false) {
+                    val sb = StringBuilder("LifeLock diagnostics (today / yesterday)\n")
+                    rows.forEach { (k, l) -> sb.append("$l: ${Store.diag(c, k, day)} / ${Store.diag(c, k, day - 1)}\n") }
+                    sb.append("Engine running: ${GuardService.inst != null}, compat helper: ${WatchService.alive}, battery-saver reminders: ${Store.lowPower(c)}\n")
+                    c.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("lifelock", sb.toString()))
+                    toast(c, "Copied")
+                }
+            }
+        }
+        item { SectionLabel("Battery") }
+        item {
+            Surf {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconChip("🔋", Pal.green)
+                    Spacer(Modifier.width(14.dp))
+                    Column(Modifier.weight(1f)) {
+                        Title("Battery-saver reminders")
+                        Sub("Reminders appear when you next pick up your phone instead of waking it. Lowest possible drain, but not instant while the phone is idle.")
+                    }
+                    Switch(checked = Store.lowPower(c), onCheckedChange = { Store.setLowPower(c, it); ReminderReceiver.schedule(c); bump() })
+                }
+            }
+        }
+        item { SectionLabel("Widget & quick tiles") }
+        item {
+            val counters = Store.habits(c).filter { it.kind == 1 }
+            val qh = Store.quickHabit(c)
+            Surf {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconChip("⚡", Pal.orange)
+                    Spacer(Modifier.width(14.dp))
+                    Column {
+                        Title("One-tap logging")
+                        Sub("Log water, check in a goal or start a focus session without opening the app.")
+                    }
+                }
+                Btn("Add home-screen widget", Modifier.padding(top = 14.dp)) {
+                    val wm = android.appwidget.AppWidgetManager.getInstance(c)
+                    if (wm.isRequestPinAppWidgetSupported)
+                        wm.requestPinAppWidget(android.content.ComponentName(c, LifeWidget::class.java), null, null)
+                    else toast(c, "Long-press your home screen, then Widgets, then LifeLock.")
+                }
+                if (Build.VERSION.SDK_INT >= 33) {
+                    Btn("Add Quick Settings tiles", Modifier.padding(top = 10.dp), filled = false) {
+                        val sbm = c.getSystemService(android.app.StatusBarManager::class.java)
+                        listOf<Pair<Class<*>, String>>(QuickLogTile::class.java to "Quick log", CheckInTile::class.java to "Check in",
+                            FocusTile::class.java to "Focus").forEach { (cls, label) ->
+                            sbm.requestAddTileService(android.content.ComponentName(c, cls), label,
+                                android.graphics.drawable.Icon.createWithResource(c, R.drawable.ic_stat), c.mainExecutor) { }
+                        }
+                    }
+                } else Sub("Swipe down twice, tap the edit pencil, and drag the LifeLock tiles in.", Modifier.padding(top = 10.dp))
+                if (counters.isNotEmpty()) {
+                    Sub("Quick-log habit", Modifier.padding(top = 14.dp))
+                    Spacer(Modifier.height(6.dp))
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Pill("Auto", qh.isEmpty() || counters.none { it.id == qh }) { Store.setQuickHabit(c, ""); LifeWidget.refresh(c); bump() }
+                        counters.forEach { h ->
+                            Pill("${h.emoji} ${h.name}", qh == h.id) { Store.setQuickHabit(c, h.id); LifeWidget.refresh(c); bump() }
+                        }
+                    }
+                }
+            }
         }
         item { SectionLabel("Compatibility mode") }
         item {

@@ -73,7 +73,7 @@ import androidx.compose.animation.core.animateFloat
 class BlockActivity : ComponentActivity() {
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
-        Pal.mode = 1
+        Pal.mode = Store.theme(this).let { if (it == 2 || it == 4) it else 1 }
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
@@ -88,7 +88,7 @@ class BlockActivity : ComponentActivity() {
     }
 
     private fun show() {
-        Pal.mode = 1
+        Pal.mode = Store.theme(this).let { if (it == 2 || it == 4) it else 1 }
         val pkg = intent.getStringExtra("pkg") ?: ""
         val kind = intent.getStringExtra("kind") ?: ""
         val msg = intent.getStringExtra("msg") ?: ""
@@ -124,7 +124,7 @@ fun BlockScreen(pkg: String, kind: String, msg: String, key: String?, onHome: ()
     val label = when (kind) { "focus" -> "FOCUS SESSION"; "goal" -> "GOAL"; "schedule" -> "SCHEDULE"; else -> "DAILY LIMIT" }
     val inf = rememberInfiniteTransition(label = "pulse")
     val s by inf.animateFloat(0.94f, 1.06f, infiniteRepeatable(tween(1800), RepeatMode.Reverse), label = "s")
-    Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color(0xFF2B1858), Pal.bg)))) {
+    Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Pal.glow, Pal.bg)))) {
         Column(Modifier.fillMaxSize().systemBarsPadding().padding(28.dp),
             verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
             Box(Modifier.size(150.dp).graphicsLayer { scaleX = s; scaleY = s }, contentAlignment = Alignment.Center) {

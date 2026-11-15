@@ -204,6 +204,12 @@ fun TargetEditor(id: String?, onClose: () -> Unit) {
     var startTxt by remember { mutableStateOf(ex?.let { fmtNum(it.start) } ?: "") }
     var targetTxt by remember { mutableStateOf(ex?.let { fmtNum(it.target) } ?: "") }
     var end by remember { mutableStateOf<LocalDate?>(if (ex != null && ex.end > 0) LocalDate.ofEpochDay(ex.end) else null) }
+    var rMode by remember { mutableIntStateOf(if (ex == null || !ex.remOn) 0 else if (ex.remEvery >= 1440) 1 else 2) }
+    var rAt by remember { mutableIntStateOf(ex?.remFrom ?: 480) }
+    var rFrom by remember { mutableIntStateOf(if (ex != null && ex.remEvery < 1440) ex.remFrom else 540) }
+    var rTo by remember { mutableIntStateOf(if (ex != null && ex.remEvery < 1440) ex.remTo else 1200) }
+    var rEvery by remember { mutableIntStateOf(if (ex != null && ex.remEvery < 1440) ex.remEvery else 180) }
+    var rDays by remember { mutableIntStateOf(ex?.remDays ?: 127) }
     val sv = startTxt.replace(',', '.').toDoubleOrNull()
     val tv = targetTxt.replace(',', '.').toDoubleOrNull()
     val numKb = KeyboardOptions(keyboardType = KeyboardType.Decimal)
@@ -215,6 +221,7 @@ fun TargetEditor(id: String?, onClose: () -> Unit) {
                 TTPLS.forEach { t ->
                     Pill("${t.emoji} ${t.name}", false) {
                         name = t.name; emoji = t.emoji; unit = t.unit; startTxt = fmtNum(t.start); targetTxt = fmtNum(t.target)
+                        rMode = 1; rAt = if (t.name.startsWith("Lose")) 450 else 1080
                     }
                 }
             }
@@ -254,18 +261,60 @@ fun TargetEditor(id: String?, onClose: () -> Unit) {
             if (end != null) Sub("Tap to change. The card will show if you're on track.", Modifier.padding(top = 4.dp))
         }
         if (end != null) Btn("Remove deadline", filled = false) { end = null }
+        Surf {
+            Title("Reminders")
+            Spacer(Modifier.height(10.dp))
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Pill("None", rMode == 0) { rMode = 0 }
+                Pill("Once a day", rMode == 1) { rMode = 1 }
+                Pill("Every few hours", rMode == 2) { rMode = 2 }
+            }
+            if (rMode == 1) {
+                Spacer(Modifier.height(12.dp))
+                TimeBtn("Remind me at", rAt, Modifier.fillMaxWidth()) { rAt = it }
+            }
+            if (rMode == 2) {
+                Spacer(Modifier.height(12.dp))
+                Row {
+                    TimeBtn("From", rFrom, Modifier.weight(1f)) { rFrom = it }
+                    Spacer(Modifier.width(12.dp))
+                    TimeBtn("Until", rTo, Modifier.weight(1f)) { rTo = it }
+                }
+                Spacer(Modifier.height(12.dp))
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(60 to "1 hour", 120 to "2 hours", 180 to "3 hours", 240 to "4 hours", 360 to "6 hours").forEach { (m, l) ->
+                        Pill(l, rEvery == m) { rEvery = m }
+                    }
+                }
+            }
+            if (rMode != 0) {
+                Spacer(Modifier.height(14.dp))
+                Sub("On these days")
+                Spacer(Modifier.height(8.dp))
+                DayChips(rDays) { rDays = it }
+                Sub("Skipped during your quiet times, once you've logged today, and after you reach the goal.", Modifier.padding(top = 10.dp))
+            }
+        }
         Btn("Save target") {
             if (name.isBlank()) toast(c, "Give it a name")
             else if (sv == null || tv == null) toast(c, "Enter both numbers")
             else if (sv == tv) toast(c, "Start and goal can't be the same")
+            else if (rMode != 0 && rDays == 0) toast(c, "Pick at least one day for reminders")
             else {
                 val now = System.currentTimeMillis()
                 val e = end?.toEpochDay() ?: 0L
-                if (ex == null) Store.saveTrack(c, Track(now.toString(), name.trim(), emoji.ifBlank { "🎯" }, unit.trim(), sv, tv, e, now, listOf(now to sv)))
-                else Store.saveTrack(c, ex.copy(name = name.trim(), emoji = emoji.ifBlank { "🎯" }, unit = unit.trim(), target = tv, end = e))
+                val rOn = rMode != 0
+                val rf = if (rMode == 1) rAt else rFrom
+                val rt = if (rMode == 1) rAt else rTo
+                val re = if (rMode == 1) 1440 else rEvery
+                if (ex == null) Store.saveTrack(c, Track(now.toString(), name.trim(), emoji.ifBlank { "🎯" }, unit.trim(), sv, tv, e, now,
+                    listOf(now to sv), rOn, rf, rt, re, rDays))
+                else Store.saveTrack(c, ex.copy(name = name.trim(), emoji = emoji.ifBlank { "🎯" }, unit = unit.trim(), target = tv, end = e,
+                    remOn = rOn, remFrom = rf, remTo = rt, remEvery = re, remDays = rDays))
+                ReminderReceiver.schedule(c)
                 onClose()
             }
         }
-        if (ex != null) Btn("Delete target", filled = false) { Store.deleteTrack(c, ex.id); onClose() }
+        if (ex != null) Btn("Delete target", filled = false) { Store.deleteTrack(c, ex.id); ReminderReceiver.schedule(c); onClose() }
     }
 }

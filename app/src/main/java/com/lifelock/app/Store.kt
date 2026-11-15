@@ -20,7 +20,8 @@ data class Habit(val id: String, val name: String, val emoji: String, val kind: 
                  val step: Int, val days: Int, val remOn: Boolean, val remFrom: Int, val remTo: Int, val remEvery: Int,
                  val created: Long, val streak: Int, val best: Int, val ev: Long)   // kind: 0 = yes/no, 1 = at least, 2 = at most
 data class Track(val id: String, val name: String, val emoji: String, val unit: String, val start: Double,
-                 val target: Double, val end: Long, val created: Long, val hist: List<Pair<Long, Double>>) {
+                 val target: Double, val end: Long, val created: Long, val hist: List<Pair<Long, Double>>,
+                 val remOn: Boolean = false, val remFrom: Int = 480, val remTo: Int = 480, val remEvery: Int = 1440, val remDays: Int = 127) {
     val cur: Double get() = hist.lastOrNull()?.second ?: start
     val up: Boolean get() = target >= start
 }
@@ -139,10 +140,16 @@ object Store {
     fun used(c: Context, key: String): Long = usageMem[key] ?: sp(c).getLong("u_$key", 0L)
     fun addUsed(c: Context, key: String, ms: Long) { usageMem[key] = used(c, key) + ms; usageDirty.add(key) }
     /** Writes pending usage to disk in a single batch. Called on screen-off, app switch and every few minutes. */
-    fun flushUsage(c: Context) {
-        if (usageDirty.isEmpty()) return
+    private val diagDirty = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    /**
+     * Saves real usage whenever it changed. Diagnostic counters are only saved when [all] is true
+     * (screen off, service stop, alarms, the slow timer), so ordinary app switches cause no disk writes.
+     */
+    fun flushUsage(c: Context, all: Boolean = false) {
+        if (usageDirty.isEmpty() && !(all && diagDirty.isNotEmpty())) return
         val ed = sp(c).edit()
         for (k in usageDirty.toList()) { ed.putLong("u_$k", usageMem[k] ?: 0L); usageDirty.remove(k) }
+        if (all) for (k in diagDirty.toList()) { ed.putLong("u_$k", usageMem[k] ?: 0L); diagDirty.remove(k) }
         ed.apply()
     }
 
@@ -177,6 +184,8 @@ object Store {
         return best
     }
     fun extra(c: Context, key: String) = sp(c).getInt("x_$key", 0)
+    fun bump(c: Context, name: String) { val k = "diag_${name}_${today()}"; usageMem[k] = used(c, k) + 1L; diagDirty.add(k) }
+    fun diag(c: Context, name: String, day: Long) = used(c, "diag_${name}_$day")
 
     fun rollover(c: Context) {
         val t = today()
@@ -334,7 +343,8 @@ object Store {
     private fun parseTracks(c: Context): List<Track> = JSONArray(sp(c).getString("tracks", "[]")).objs().map { o ->
         val h = o.getJSONArray("h")
         Track(o.getString("id"), o.getString("n"), o.getString("em"), o.getString("u"), o.getDouble("s"), o.getDouble("t"),
-            o.getLong("e"), o.getLong("c"), List(h.length()) { i -> val a = h.getJSONArray(i); a.getLong(0) to a.getDouble(1) })
+            o.getLong("e"), o.getLong("c"), List(h.length()) { i -> val a = h.getJSONArray(i); a.getLong(0) to a.getDouble(1) },
+            o.optBoolean("ro", false), o.optInt("rf", 480), o.optInt("rt", 480), o.optInt("re", 1440), o.optInt("rd", 127))
     }
     private fun writeTracks(c: Context, l: List<Track>) {
         val a = JSONArray()
@@ -342,7 +352,8 @@ object Store {
             val h = JSONArray()
             t.hist.forEach { h.put(JSONArray().put(it.first).put(it.second)) }
             a.put(JSONObject().put("id", t.id).put("n", t.name).put("em", t.emoji).put("u", t.unit).put("s", t.start)
-                .put("t", t.target).put("e", t.end).put("c", t.created).put("h", h))
+                .put("t", t.target).put("e", t.end).put("c", t.created).put("ro", t.remOn).put("rf", t.remFrom).put("rt", t.remTo)
+                .put("re", t.remEvery).put("rd", t.remDays).put("h", h))
         }
         sp(c).edit().putString("tracks", a.toString()).apply()
     }
@@ -373,7 +384,11 @@ object Store {
     fun ruleTouches(c: Context, p: String) =
         goals(c).any { p in it.apps } || limits(c).any { it.pkg == p } || scheds(c).any { s -> s.entries.any { it.pkg == p } }
 
-    fun theme(c: Context) = sp(c).getInt("theme", 0)
+    fun theme(c: Context) = sp(c).getInt("theme", 1)
+    fun lowPower(c: Context) = sp(c).getBoolean("lowpower", false)
+    fun setLowPower(c: Context, v: Boolean) = sp(c).edit().putBoolean("lowpower", v).apply()
+    fun quickHabit(c: Context) = sp(c).getString("qh", "") ?: ""
+    fun setQuickHabit(c: Context, id: String) = sp(c).edit().putString("qh", id).apply()
 
     // ---- rule engine ----
     fun trackKeys(c: Context, p: String, now: LocalDateTime): List<String> {

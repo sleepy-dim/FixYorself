@@ -22,7 +22,7 @@
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:theme="@style/Theme.LifeLock">
-        <activity android:name=".MainActivity" android:exported="true" android:windowSoftInputMode="adjustResize">
+        <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTask" android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -43,7 +43,25 @@
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Watches which app is in the foreground so accessibility-based blocking can pause for apps the user chose and resume afterwards" />
         </service>
+        <receiver android:name=".LifeWidget" android:exported="true">
+            <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_life_info" />
+        </receiver>
+        <receiver android:name=".WidgetActionReceiver" android:exported="false" />
+        <service android:name=".QuickLogTile" android:exported="true" android:label="Quick log" android:icon="@drawable/ic_stat"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter><action android:name="android.service.quicksettings.action.QS_TILE" /></intent-filter>
+        </service>
+        <service android:name=".CheckInTile" android:exported="true" android:label="Check in" android:icon="@drawable/ic_stat"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter><action android:name="android.service.quicksettings.action.QS_TILE" /></intent-filter>
+        </service>
+        <service android:name=".FocusTile" android:exported="true" android:label="Focus" android:icon="@drawable/ic_stat"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter><action android:name="android.service.quicksettings.action.QS_TILE" /></intent-filter>
+        </service>
         <receiver android:name=".ReminderReceiver" android:exported="false" />
+        <receiver android:name=".DailyReceiver" android:exported="false" />
         <receiver android:name=".HabitActionReceiver" android:exported="false" />
         <receiver android:name=".BootReceiver" android:exported="true">
             <intent-filter>

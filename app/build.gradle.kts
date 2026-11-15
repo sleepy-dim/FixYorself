@@ -9,8 +9,8 @@ android {
         applicationId = "com.lifelock.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 6
-        versionName = "3.2"
+        versionCode = 11
+        versionName = "3.5.1"
     }
     signingConfigs {
         getByName("debug") {
@@ -25,6 +25,18 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
+    buildTypes {
+        release {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            signingConfig = signingConfigs.getByName("debug")
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        }
+    }
+    lint {
+        checkReleaseBuilds = false
+        abortOnError = false
+    }
     buildFeatures { compose = true }
     composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
 }

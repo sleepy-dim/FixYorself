@@ -27,6 +27,9 @@ class GuardService : AccessibilityService() {
     private var fg = ""
     private var last = System.currentTimeMillis()
     private var lastBlock = 0L
+    private var lastChk = 0L
+    private var blockWin = 0L
+    private var blockN = 0
     private var essAt = 0L
     private var ess: Set<String> = emptySet()
     private val launchable = HashMap<String, Boolean>()
@@ -40,16 +43,17 @@ class GuardService : AccessibilityService() {
      */
     private val tick = Runnable {
         ticks++
+        Store.bump(this, "ticks")
         accrue()
         check(fg)
-        Store.flushUsage(this)
+        Store.flushUsage(this, true)
         planNext()
     }
 
     private val screenRx = object : BroadcastReceiver() {
         override fun onReceive(c: Context?, i: Intent?) {
             if (i?.action == Intent.ACTION_SCREEN_OFF) {
-                accrue(); Store.flushUsage(this@GuardService); screenOn = false; h.removeCallbacks(tick)
+                accrue(); Store.flushUsage(this@GuardService, true); screenOn = false; h.removeCallbacks(tick)
             } else if (i?.action == Intent.ACTION_SCREEN_ON) {
                 screenOn = true; last = System.currentTimeMillis()
                 h.postDelayed({ check(fg) }, 600L)   // catches schedules that started while the screen was off
@@ -83,15 +87,25 @@ class GuardService : AccessibilityService() {
         val p = e.packageName?.toString() ?: return
         if (p != packageName && !isUserApp(p)) return   // system overlays never count as "the current app"
         events++
-        if (p != fg) { accrue(); Store.flushUsage(this); fg = p }
-        check(p)
-        if (p == fg) planNext()
+        Store.bump(this, "events")
+        if (p != fg) {
+            accrue(); Store.flushUsage(this); fg = p
+            check(p)
+            planNext()
+        } else if (System.currentTimeMillis() - lastChk > 3000L) {
+            check(p)   // same app: keyboards, popups and dialogs also fire events, so re-check at most every 3 s
+        }
     }
 
     override fun onInterrupt() {}
 
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_BACKGROUND) AppRepo.clear()
+    }
+
     override fun onDestroy() {
-        Store.flushUsage(this)
+        Store.flushUsage(this, true)
         h.removeCallbacks(tick)
         if (rxOn) { try { unregisterReceiver(screenRx) } catch (e: Exception) { }; rxOn = false }
         inst = null
@@ -129,6 +143,7 @@ class GuardService : AccessibilityService() {
     }
 
     private fun check(p: String) {
+        lastChk = System.currentTimeMillis()
         if (p.isEmpty() || p == packageName || !isUserApp(p)) return
         val r = Store.blockReason(this, p, essentials(), Store.focusApps(this), LocalDateTime.now())
         if (r == null) {
@@ -136,8 +151,11 @@ class GuardService : AccessibilityService() {
             return
         }
         val now = System.currentTimeMillis()
-        if (now - lastBlock < 1500) return
+        if (now - blockWin > 30000L) { blockWin = now; blockN = 0 }
+        if (now - lastBlock < (if (blockN >= 4) 8000L else 1500L)) return   // back off if something keeps reopening a blocked app
         lastBlock = now
+        blockN++
+        Store.bump(this, "blocks")
         performGlobalAction(GLOBAL_ACTION_HOME)
         h.postDelayed({
             startActivity(Intent(this, BlockActivity::class.java)

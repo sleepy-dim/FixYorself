@@ -66,6 +66,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 
 class MainActivity : ComponentActivity() {
     private val startKey = mutableIntStateOf(0)
+    private val launch = mutableStateOf<String?>(null)
+    private val visible = mutableStateOf(false)
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
@@ -76,21 +78,32 @@ class MainActivity : ComponentActivity() {
             statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
         )
+        launch.value = intent?.getStringExtra("go")
         ReminderReceiver.ensure(this)
-        setContent { LifeTheme { Root(startKey.intValue) } }
+        setContent { LifeTheme { Root(startKey.intValue, visible.value, launch.value) { launch.value = null } } }
     }
 
     override fun onStart() {
         super.onStart()
         Pal.mode = Store.theme(this)
         Compat.sync(this)
+        visible.value = true
         startKey.intValue++
     }
 
     /** Free the app-icon cache while in the background; the blocker keeps running without it. */
     override fun onStop() {
         super.onStop()
+        visible.value = false
         AppRepo.clear()
+        LifeWidget.refresh(this)
+    }
+
+    /** Widget and Quick Settings tile taps arrive here (singleTask) with a "go" extra. */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        launch.value = intent.getStringExtra("go")
     }
 }
 
@@ -105,13 +118,18 @@ sealed interface Page {
 }
 
 @Composable
-fun Root(startKey: Int) {
+fun Root(startKey: Int, visible: Boolean, launch: String?, consumed: () -> Unit) {
     val c = LocalContext.current
     var ver by remember { mutableIntStateOf(0) }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var tab by remember { mutableIntStateOf(0) }
     var sub by remember { mutableIntStateOf(0) }
+    var lsub by remember { mutableIntStateOf(0) }
     var page by remember { mutableStateOf<Page?>(null) }
+    LaunchedEffect(launch) {
+        if (launch == "focus") { page = Page.FocusSetup; consumed() }
+        else if (launch == "targets") { page = null; tab = 1; sub = 1; consumed() }
+    }
 
     // Runs every time the app comes to the front: refresh day rollover, icons and permission status.
     LaunchedEffect(startKey) {
@@ -119,8 +137,10 @@ fun Root(startKey: Int) {
         AppRepo.load(c)
         ver++
     }
-    // Slow clock: once a second only while a focus countdown is visible, otherwise every 10 s.
-    LaunchedEffect(Unit) {
+    // Slow clock. Runs ONLY while the app is on screen (it used to keep ticking in the background).
+    LaunchedEffect(visible) {
+        if (!visible) return@LaunchedEffect
+        now = System.currentTimeMillis()
         var day = Store.today()
         while (true) {
             delay(if (Store.focusUntil(c) > System.currentTimeMillis()) 1000L else 10000L)
@@ -161,7 +181,7 @@ fun Root(startKey: Int) {
             val fab: Pair<String, Page>? = when (tab) {
                 0 -> "New goal" to Page.NewGoal
                 1 -> if (sub == 0) "New habit" to Page.HabitEdit(null) else "New target" to Page.TargetEdit(null)
-                2 -> "Limit an app" to Page.NewLimit
+                2 -> if (lsub == 0) "Limit an app" to Page.NewLimit else null
                 3 -> "New schedule" to Page.SchedEdit(null)
                 else -> null
             }
@@ -198,7 +218,7 @@ fun Root(startKey: Int) {
                     when (tab) {
                         0 -> TodayScreen(ver, now, go, bump)
                         1 -> HabitsScreen(ver, now, sub, { sub = it }, go, bump)
-                        2 -> LimitsScreen(ver, now, go, bump)
+                        2 -> LimitsScreen(ver, now, lsub, { lsub = it }, go, bump)
                         3 -> SchedulesScreen(ver, now, go, bump)
                         else -> SettingsScreen(ver, now, go, bump)
                     }
