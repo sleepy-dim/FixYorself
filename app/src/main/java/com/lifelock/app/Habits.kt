@@ -57,6 +57,7 @@ private class Tpl(val name: String, val emoji: String, val kind: Int, val target
 private val TPLS = listOf(
     Tpl("Drink water", "💧", 1, 3000, "ml", 250, 480, 1320, 90),
     Tpl("Walk break", "🚶", 1, 8, "walks", 1, 540, 1140, 60),
+    Tpl("Daily walk", "🚶", 0, 1, "", 1, 1020, 1200, 60),
     Tpl("Calories", "🍽️", 2, 1300, "kcal", 100, 540, 1260, 240),
     Tpl("Steps", "👟", 1, 8000, "steps", 1000, 600, 1200, 120),
     Tpl("Workout", "🏋️", 0, 1, "", 1, 1080, 1140, 1440),
@@ -64,6 +65,13 @@ private val TPLS = listOf(
     Tpl("Meditate", "🧘", 0, 1, "", 1, 420, 480, 1440),
     Tpl("Vitamins", "💊", 0, 1, "", 1, 540, 600, 1440)
 )
+
+fun ruleText(from: Int, to: Int, every: Int): String =
+    if (every >= 1440) "daily at ${hhmm(from)}"
+    else "every ${everyLabel(every)}, " + (if (from == to) "all day" else "${hhmm(from)}–${hhmm(to)}")
+
+fun remSummary(h: Habit): String = ruleText(h.remFrom, h.remTo, h.remEvery) +
+    (if (h.extra.isNotEmpty()) " · +${h.extra.size} more schedule${if (h.extra.size > 1) "s" else ""}" else "")
 
 fun everyLabel(m: Int) = if (m >= 1440) "day" else if (m % 60 == 0) "${m / 60} h" else "$m min"
 
@@ -155,9 +163,7 @@ fun HabitCard(h: Habit, t: Long, ver: Int, go: (Page) -> Unit, bump: () -> Unit)
                 }
             }
         }
-        if (h.remOn) Sub("🔔 " + (if (h.remEvery >= 1440) "daily at ${hhmm(h.remFrom)}"
-            else "every ${everyLabel(h.remEvery)}, " + (if (h.remFrom == h.remTo) "all day" else "${hhmm(h.remFrom)}–${hhmm(h.remTo)}")),
-            Modifier.padding(top = 12.dp))
+        if (h.remOn) Sub("🔔 " + remSummary(h), Modifier.padding(top = 12.dp))
         if (active) {
             if (h.kind == 0) {
                 Btn(if (met) "Undo" else "Mark done", Modifier.padding(top = 14.dp), filled = !met, color = Pal.green) {
@@ -193,6 +199,44 @@ fun HabitCard(h: Habit, t: Long, ver: Int, go: (Page) -> Unit, bump: () -> Unit)
 }
 
 // ---------------------------------------------------------------- editor
+/** One reminder schedule: either "once a day at a time" or "repeat through the day", on chosen days. */
+@Composable
+fun RuleEditor(r: RemRule, showDays: Boolean, onChange: (RemRule) -> Unit) {
+    val once = r.every >= 1440
+    val allDay = !once && r.from == r.to
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Pill("Once a day", once) { onChange(r.copy(every = 1440, to = r.from)) }
+            Pill("Repeat through the day", !once) {
+                onChange(r.copy(every = if (r.every >= 1440) 60 else r.every, to = if (r.from == r.to) (r.from + 720) % 1440 else r.to))
+            }
+        }
+        if (once) {
+            TimeBtn("Remind me at", r.from, Modifier.fillMaxWidth()) { onChange(r.copy(from = it, to = it)) }
+        } else {
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Pill("All day (24h)", allDay) { onChange(r.copy(from = 0, to = 0)) }
+                Pill("Only between", !allDay) { onChange(r.copy(from = if (allDay) 540 else r.from, to = if (allDay) 1260 else r.to)) }
+            }
+            if (!allDay) Row {
+                TimeBtn("From", r.from, Modifier.weight(1f)) { onChange(r.copy(from = it)) }
+                Spacer(Modifier.width(12.dp))
+                TimeBtn("Until", r.to, Modifier.weight(1f)) { onChange(r.copy(to = it)) }
+            }
+            Sub("How often")
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(30 to "30 min", 60 to "1 hour", 90 to "90 min", 120 to "2 hours", 180 to "3 hours", 240 to "4 hours").forEach { (m, l) ->
+                    Pill(l, r.every == m) { onChange(r.copy(every = m)) }
+                }
+            }
+        }
+        if (showDays) {
+            Sub("On these days")
+            DayChips(r.days) { onChange(r.copy(days = it)) }
+        }
+    }
+}
+
 @Composable
 fun HabitEditor(id: String?, onClose: () -> Unit) {
     val c = LocalContext.current
@@ -205,21 +249,24 @@ fun HabitEditor(id: String?, onClose: () -> Unit) {
     var step by remember { mutableIntStateOf(ex?.step ?: 1) }
     var days by remember { mutableIntStateOf(ex?.days ?: 127) }
     var remOn by remember { mutableStateOf(ex?.remOn ?: false) }
-    var allDay by remember { mutableStateOf(ex != null && ex.remFrom == ex.remTo) }
-    var from by remember { mutableIntStateOf(ex?.remFrom ?: 480) }
-    var to by remember { mutableIntStateOf(ex?.remTo ?: 1320) }
-    var every by remember { mutableIntStateOf(ex?.remEvery ?: 60) }
+    var rules by remember {
+        mutableStateOf(
+            if (ex != null) listOf(RemRule(if (ex.remDays < 0) ex.days else ex.remDays, ex.remFrom, ex.remTo, ex.remEvery)) + ex.extra
+            else listOf(RemRule(127, 480, 1320, 60))
+        )
+    }
+    var adv by remember { mutableStateOf(ex != null && (ex.extra.isNotEmpty() || (ex.remDays >= 0 && ex.remDays != ex.days))) }
 
-    fun apply(t: Tpl) {
+    fun useTpl(t: Tpl) {
         name = t.name; emoji = t.emoji; kind = t.kind; target = t.target; unit = t.unit; step = t.step
-        remOn = true; allDay = false; from = t.from; to = t.to; every = t.every
+        remOn = true; adv = false; rules = listOf(RemRule(127, t.from, t.to, t.every))
     }
 
     EditorPage(if (ex == null) "New habit" else "Edit habit", onClose) {
         if (ex == null) {
             Sub("Quick start")
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TPLS.forEach { Pill("${it.emoji} ${it.name}", false) { apply(it) } }
+                TPLS.forEach { Pill("${it.emoji} ${it.name}", false) { useTpl(it) } }
             }
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -229,75 +276,73 @@ fun HabitEditor(id: String?, onClose: () -> Unit) {
                 label = { Text("Habit name") }, modifier = Modifier.weight(1f))
         }
         Surf {
-            Title("Type")
-            Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Pill("Yes / No", kind == 0) { kind = 0 }
-                Pill("At least", kind == 1) { kind = 1 }
-                Pill("At most", kind == 2) { kind = 2 }
+            Title("How do you do it?")
+            Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Pill("Once a day", kind == 0) { kind = 0 }
+                Pill("Several times a day", kind == 1) { kind = 1 }
+                Pill("Daily limit", kind == 2) { kind = 2 }
             }
             Sub(when (kind) {
-                0 -> "A simple daily task. Tap once when it's done."
-                1 -> "Reach at least the target, e.g. 3000 ml of water."
-                else -> "Stay at or under the target, e.g. 1300 kcal. A day counts once you've logged something."
-            }, Modifier.padding(top = 8.dp))
+                0 -> "Do it once and tick it off, like a workout, reading or a walk. Reminders repeat until you've done it."
+                1 -> "Count how many times (a walk every hour) or how much (3000 ml of water). Reminders stop when you hit the target."
+                else -> "Stay at or under a number, like 1300 kcal. A day counts once you've logged something."
+            }, Modifier.padding(top = 10.dp))
         }
         if (kind != 0) Surf {
-            Title("Daily target")
+            Title(if (kind == 1) "Daily target" else "Daily limit")
             Spacer(Modifier.height(8.dp))
             OutlinedTextField(value = unit, onValueChange = { unit = it.take(12) }, singleLine = true,
-                label = { Text("Unit (ml, kcal, walks…)") }, modifier = Modifier.fillMaxWidth())
+                label = { Text("Unit (times, ml, kcal, walks…)") }, modifier = Modifier.fillMaxWidth())
             val sfx = if (unit.isBlank()) "" else " ${unit.trim()}"
             Stepper("Target", target, 1, 1000000, sfx, step) { target = it }
             Stepper("Quick-add amount", step, 1, 100000, sfx, if (step >= 100) 50 else 1) { step = it }
         }
         Surf {
-            Title("Days")
+            Title("Active on")
             Spacer(Modifier.height(10.dp))
             DayChips(days) { days = it }
         }
         Surf {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) { Title("Reminders"); Sub("Skipped on quiet times and once the target is hit") }
+                Column(Modifier.weight(1f)) { Title("Reminders"); Sub("Skipped on quiet times and once you've done it") }
                 Switch(checked = remOn, onCheckedChange = { remOn = it })
             }
             if (remOn) {
-                Spacer(Modifier.height(12.dp))
-                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Pill("All day (24h)", allDay) { allDay = true }
-                    Pill("Only between", !allDay) { allDay = false }
-                }
-                if (!allDay) {
-                    Spacer(Modifier.height(10.dp))
-                    Row {
-                        TimeBtn("From", from, Modifier.weight(1f)) { from = it }
-                        Spacer(Modifier.width(12.dp))
-                        TimeBtn("Until", to, Modifier.weight(1f)) { to = it }
+                Spacer(Modifier.height(14.dp))
+                if (!adv) {
+                    RuleEditor(rules[0], false) { rules = listOf(it) }
+                } else {
+                    rules.forEachIndexed { i, r ->
+                        Column(Modifier.fillMaxWidth().padding(bottom = 12.dp).clip(RoundedCornerShape(16.dp)).background(Pal.card2).padding(14.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("Schedule ${i + 1}", fontWeight = FontWeight.Bold, color = Pal.ink, modifier = Modifier.weight(1f))
+                                if (rules.size > 1) Pill("Remove", false) { rules = rules.filterIndexed { j, _ -> j != i } }
+                            }
+                            Spacer(Modifier.height(10.dp))
+                            RuleEditor(r, true) { nr -> rules = rules.mapIndexed { j, old -> if (j == i) nr else old } }
+                        }
                     }
+                    if (rules.size < 4) Btn("+ Add another schedule", filled = false) { rules = rules + rules.last().copy(days = 0) }
                 }
                 Spacer(Modifier.height(12.dp))
-                Sub("How often")
-                Spacer(Modifier.height(6.dp))
-                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(30 to "30 min", 60 to "1 hour", 90 to "90 min", 120 to "2 hours", 180 to "3 hours", 240 to "4 hours", 1440 to "Once a day").forEach { (m, l) ->
-                        Pill(l, every == m) { every = m }
-                    }
+                Pill(if (adv) "Back to simple" else "Advanced: different days or times", adv) {
+                    if (adv) { adv = false; rules = listOf(rules[0]) }
+                    else { adv = true; val r0 = rules[0]; rules = listOf(r0.copy(days = 31), r0.copy(days = 96)) }
                 }
-                if (every >= 1440) Sub("Once a day fires at the From time" + if (allDay) " (00:00 when set to all day)." else ".", Modifier.padding(top = 8.dp))
+                if (!adv) Sub("Advanced lets you set different reminders for school days and weekends, or any mix.", Modifier.padding(top = 8.dp))
             }
         }
         Btn("Save habit") {
             if (days == 0) toast(c, "Pick at least one day")
+            else if (remOn && adv && rules.any { it.days == 0 }) toast(c, "Each reminder schedule needs at least one day")
             else {
-                val f = if (allDay) 0 else from
-                val tt = if (allDay) 0 else to
-                if (remOn && !allDay && from == to) toast(c, "From and Until can't be the same. Choose All day instead.")
-                else {
-                    Store.saveHabit(c, Habit(ex?.id ?: System.currentTimeMillis().toString(), name.ifBlank { "Habit" }, emoji.ifBlank { "✅" },
-                        kind, if (kind == 0) 1 else target, unit.trim(), if (kind == 0) 1 else step, days, remOn, f, tt, every,
-                        ex?.created ?: System.currentTimeMillis(), ex?.streak ?: 0, ex?.best ?: 0, ex?.ev ?: (Store.today() - 1)))
-                    ReminderReceiver.schedule(c)
-                    onClose()
-                }
+                val m = rules[0]
+                Store.saveHabit(c, Habit(ex?.id ?: System.currentTimeMillis().toString(), name.ifBlank { "Habit" }, emoji.ifBlank { "✅" },
+                    kind, if (kind == 0) 1 else target, unit.trim(), if (kind == 0) 1 else step, days, remOn, m.from, m.to, m.every,
+                    ex?.created ?: System.currentTimeMillis(), ex?.streak ?: 0, ex?.best ?: 0, ex?.ev ?: (Store.today() - 1),
+                    if (adv) m.days else -1, if (adv) rules.drop(1) else emptyList()))
+                ReminderReceiver.schedule(c)
+                onClose()
             }
         }
         if (ex != null) Btn("Delete habit", filled = false) { Store.deleteHabit(c, ex.id); ReminderReceiver.schedule(c); onClose() }

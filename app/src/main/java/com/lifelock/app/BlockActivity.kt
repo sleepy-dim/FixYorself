@@ -1,157 +1,127 @@
 package com.lifelock.app
 
-import android.Manifest
-import android.app.DatePickerDialog
-import android.app.TimePickerDialog
-import android.content.Context
+import android.app.Activity
 import android.content.Intent
-import android.content.pm.PackageManager
-import android.net.Uri
-import android.os.Build
-import android.provider.Settings
-import android.widget.Toast
-import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.*
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.DateRange
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Warning
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import kotlinx.coroutines.delay
-import java.time.Instant
-import java.time.LocalDate
-import java.time.LocalDateTime
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.lerp
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
-import androidx.activity.ComponentActivity
-import androidx.activity.SystemBarStyle
-import androidx.activity.enableEdgeToEdge
-import androidx.activity.compose.setContent
-import androidx.core.graphics.drawable.toBitmap
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
+import android.os.CountDownTimer
+import android.view.Gravity
+import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.TextView
+import androidx.compose.ui.graphics.toArgb
 
-class BlockActivity : ComponentActivity() {
+/**
+ * The lock screen. Deliberately built from plain Views instead of Compose: it opens in a few
+ * milliseconds, uses very little memory, and has no animation, so showing it costs almost no battery.
+ */
+class BlockActivity : Activity() {
+    private var timer: CountDownTimer? = null
+
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
         Pal.mode = Store.theme(this).let { if (it == 2 || it == 4) it else 1 }
-        enableEdgeToEdge(
-            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
-            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
-        )
-        show()
+        render()
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        show()
+        render()
     }
 
-    private fun show() {
-        Pal.mode = Store.theme(this).let { if (it == 2 || it == 4) it else 1 }
+    override fun onBackPressed() = goHome()
+
+    override fun onDestroy() {
+        timer?.cancel()
+        super.onDestroy()
+    }
+
+    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+    private fun rounded(color: Int, r: Int) = GradientDrawable().apply { setColor(color); cornerRadius = dp(r).toFloat() }
+
+    private fun label(s: String, size: Float, color: Int, bold: Boolean = false) = TextView(this).apply {
+        text = s; textSize = size; setTextColor(color); gravity = Gravity.CENTER
+        if (bold) setTypeface(typeface, Typeface.BOLD)
+    }
+
+    private fun button(s: String, fill: Int, text: Int, onClick: () -> Unit) = TextView(this).apply {
+        this.text = s; textSize = 15f; setTextColor(text); gravity = Gravity.CENTER
+        setTypeface(typeface, Typeface.BOLD)
+        background = rounded(fill, 16)
+        setPadding(dp(16), dp(16), dp(16), dp(16))
+        layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) }
+        setOnClickListener { onClick() }
+    }
+
+    private fun render() {
+        timer?.cancel()
         val pkg = intent.getStringExtra("pkg") ?: ""
         val kind = intent.getStringExtra("kind") ?: ""
         val msg = intent.getStringExtra("msg") ?: ""
         val key = intent.getStringExtra("key")
-        setContent {
-            LifeTheme {
-                BlockScreen(pkg, kind, msg, key, { goHome() }, {
-                    packageManager.getLaunchIntentForPackage(pkg)?.let { startActivity(it) }
-                    finish()
-                })
-            }
+        val pm = packageManager
+        val name = try { pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString() } catch (e: Exception) { pkg }
+        val ink = Pal.ink.toArgb()
+        val tint = when (kind) { "focus", "goal" -> Pal.accent; "schedule" -> Pal.accent2; else -> Pal.orange }.toArgb()
+        val tag = when (kind) { "focus" -> "FOCUS SESSION"; "goal" -> "GOAL"; "schedule" -> "SCHEDULE"; else -> "DAILY LIMIT" }
+
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(dp(28), dp(72), dp(28), dp(40))
+            background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(Pal.glow.toArgb(), Pal.bg.toArgb()))
         }
+        try {
+            root.addView(ImageView(this).apply {
+                setImageDrawable(pm.getApplicationIcon(pkg))
+                layoutParams = LinearLayout.LayoutParams(dp(84), dp(84))
+            })
+        } catch (e: Exception) { }
+        root.addView(label(tag, 12f, tint, true).apply {
+            background = rounded((tint and 0x00FFFFFF) or 0x30000000, 10)
+            setPadding(dp(12), dp(5), dp(12), dp(5))
+            layoutParams = LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(22) }
+        })
+        root.addView(label("$name is locked", 28f, ink, true).apply { setPadding(0, dp(14), 0, 0) })
+        root.addView(label(msg, 16f, Pal.text2.toArgb()).apply { setPadding(0, dp(10), 0, 0); setLineSpacing(0f, 1.2f) })
+        val why = Store.why(this)
+        if (why.isNotEmpty()) root.addView(label("“$why”", 18f, ink, true).apply {
+            background = rounded((ink and 0x00FFFFFF) or 0x12000000, 18)
+            setPadding(dp(16), dp(16), dp(16), dp(16))
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(24) }
+        })
+        root.addView(button("Go home", Pal.accent.toArgb(), 0xFFFFFFFF.toInt()) { goHome() }.apply {
+            (layoutParams as LinearLayout.LayoutParams).topMargin = dp(32)
+        })
+
+        if (kind == "limit" && key != null && Store.passesLeft(this) > 0) {
+            val pass = button("Think about it… 10s", Pal.card2.toArgb(), ink) { }
+            pass.alpha = 0.5f
+            root.addView(pass)
+            timer = object : CountDownTimer(10000, 1000) {
+                override fun onTick(ms: Long) { pass.text = "Think about it… ${ms / 1000 + 1}s" }
+                override fun onFinish() {
+                    pass.alpha = 1f
+                    pass.text = "Use a pass (+${Store.passMin(this@BlockActivity)} min) · ${Store.passesLeft(this@BlockActivity)} left"
+                    pass.setOnClickListener {
+                        if (Store.usePass(this@BlockActivity, key)) {
+                            packageManager.getLaunchIntentForPackage(pkg)?.let { startActivity(it) }
+                            finish()
+                        }
+                    }
+                }
+            }.start()
+        }
+        root.addView(label("App ID: $pkg", 11f, Pal.muted.toArgb()).apply { setPadding(0, dp(20), 0, 0) })
+        setContentView(ScrollView(this).apply { isFillViewport = true; setBackgroundColor(Pal.bg.toArgb()); addView(root) })
     }
 
     private fun goHome() {
         startActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         finish()
-    }
-}
-
-@Composable
-fun BlockScreen(pkg: String, kind: String, msg: String, key: String?, onHome: () -> Unit, onOpen: () -> Unit) {
-    val c = LocalContext.current
-    val pm = c.packageManager
-    val name = remember(pkg) { try { pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString() } catch (e: Exception) { pkg } }
-    val icon = remember(pkg) { try { pm.getApplicationIcon(pkg).toBitmap(180, 180).asImageBitmap() } catch (e: Exception) { null } }
-    var wait by remember { mutableIntStateOf(10) }
-    val canPass = key != null && Store.passesLeft(c) > 0
-    LaunchedEffect(Unit) { while (wait > 0) { delay(1000); wait-- } }
-    BackHandler { onHome() }
-    val why = Store.why(c)
-    val tint = when (kind) { "focus" -> Pal.accent; "goal" -> Pal.accent; "schedule" -> Pal.accent2; else -> Pal.orange }
-    val label = when (kind) { "focus" -> "FOCUS SESSION"; "goal" -> "GOAL"; "schedule" -> "SCHEDULE"; else -> "DAILY LIMIT" }
-    val inf = rememberInfiniteTransition(label = "pulse")
-    val s by inf.animateFloat(0.94f, 1.06f, infiniteRepeatable(tween(1800), RepeatMode.Reverse), label = "s")
-    Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Pal.glow, Pal.bg)))) {
-        Column(Modifier.fillMaxSize().systemBarsPadding().padding(28.dp),
-            verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-            Box(Modifier.size(150.dp).graphicsLayer { scaleX = s; scaleY = s }, contentAlignment = Alignment.Center) {
-                Box(Modifier.fillMaxSize().clip(CircleShape).background(tint.copy(alpha = 0.14f)))
-                Box(Modifier.size(118.dp).clip(CircleShape).background(tint.copy(alpha = 0.16f)))
-                if (icon != null) Image(bitmap = icon, contentDescription = null, modifier = Modifier.size(80.dp).clip(RoundedCornerShape(20.dp)))
-            }
-            Spacer(Modifier.height(24.dp))
-            Chip(label, tint)
-            Spacer(Modifier.height(14.dp))
-            Text("$name is locked", fontSize = 30.sp, fontWeight = FontWeight.ExtraBold, color = Color.White, textAlign = TextAlign.Center)
-            Spacer(Modifier.height(10.dp))
-            Text(msg, fontSize = 16.sp, lineHeight = 23.sp, color = Pal.text2, textAlign = TextAlign.Center)
-            if (why.isNotEmpty()) {
-                Spacer(Modifier.height(24.dp))
-                Text("“$why”", fontSize = 18.sp, color = Color.White, textAlign = TextAlign.Center, fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.clip(RoundedCornerShape(18.dp)).background(Color.White.copy(alpha = 0.07f)).padding(16.dp))
-            }
-            Spacer(Modifier.height(32.dp))
-            Btn("Go home") { onHome() }
-            if (kind == "limit" && canPass) {
-                Btn(if (wait > 0) "Think about it… ${wait}s" else "Use a pass (+${Store.passMin(c)} min) · ${Store.passesLeft(c)} left",
-                    Modifier.padding(top = 10.dp), filled = false, enabled = wait == 0) {
-                    if (key != null && Store.usePass(c, key)) onOpen()
-                }
-            }
-            Text("App ID: $pkg", fontSize = 11.sp, color = Pal.muted, modifier = Modifier.padding(top = 20.dp))
-        }
     }
 }

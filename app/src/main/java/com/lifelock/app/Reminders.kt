@@ -20,7 +20,10 @@ object Reminders {
         val r = Store.rem(c)
         val l = mutableListOf<Src>()
         if (r.on) l.add(Src("goal", r.from, r.to, r.every, 127))
-        Store.habits(c).filter { it.remOn }.forEach { l.add(Src("h_${it.id}", it.remFrom, it.remTo, it.remEvery, it.days)) }
+        Store.habits(c).filter { it.remOn }.forEach { h ->
+            l.add(Src("h_${h.id}", h.remFrom, h.remTo, h.remEvery, if (h.remDays < 0) h.days else h.remDays))
+            h.extra.forEachIndexed { i, x -> l.add(Src("h_${h.id}#$i", x.from, x.to, x.every, x.days)) }
+        }
         Store.tracks(c).filter { it.remOn }.forEach { l.add(Src("t_${it.id}", it.remFrom, it.remTo, it.remEvery, it.remDays)) }
         return l
     }
@@ -89,7 +92,8 @@ object Reminders {
             if (!reached && !loggedToday) notifyTrack(c, tr)
             return
         }
-        val h = Store.habits(c).firstOrNull { "h_${it.id}" == s.key } ?: return
+        val hid = s.key.removePrefix("h_").substringBefore('#')
+        val h = Store.habits(c).firstOrNull { it.id == hid } ?: return
         val t = Store.today()
         if (!Store.hActive(h, t)) return
         val v = Store.hLog(c, h.id, t)

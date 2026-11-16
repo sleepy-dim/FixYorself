@@ -16,9 +16,11 @@ data class Sched(val id: String, val name: String, val days: Int, val start: Int
                  val allowOnly: Boolean, val entries: List<Entry>, val created: Long)
 data class Quiet(val id: String, val name: String, val days: Int, val start: Int, val end: Int)
 data class RemCfg(val on: Boolean, val from: Int, val to: Int, val every: Int)
+data class RemRule(val days: Int, val from: Int, val to: Int, val every: Int)   // every >= 1440 means "once a day at From"
 data class Habit(val id: String, val name: String, val emoji: String, val kind: Int, val target: Int, val unit: String,
                  val step: Int, val days: Int, val remOn: Boolean, val remFrom: Int, val remTo: Int, val remEvery: Int,
-                 val created: Long, val streak: Int, val best: Int, val ev: Long)   // kind: 0 = yes/no, 1 = at least, 2 = at most
+                 val created: Long, val streak: Int, val best: Int, val ev: Long,
+                 val remDays: Int = -1, val extra: List<RemRule> = emptyList())   // remDays -1 = same days as the habit; kind: 0 = yes/no, 1 = at least, 2 = at most
 data class Track(val id: String, val name: String, val emoji: String, val unit: String, val start: Double,
                  val target: Double, val end: Long, val created: Long, val hist: List<Pair<Long, Double>>,
                  val remOn: Boolean = false, val remFrom: Int = 480, val remTo: Int = 480, val remEvery: Int = 1440, val remDays: Int = 127) {
@@ -295,16 +297,24 @@ object Store {
     private fun parseHabits(c: Context): List<Habit> = JSONArray(sp(c).getString("habits", "[]")).objs().map {
         Habit(it.getString("id"), it.getString("n"), it.getString("em"), it.getInt("k"), it.getInt("t"), it.getString("u"),
             it.getInt("st"), it.getInt("d"), it.getBoolean("ro"), it.getInt("rf"), it.getInt("rt"), it.getInt("re"),
-            it.getLong("c"), it.getInt("s"), it.getInt("b"), it.getLong("e"))
+            it.getLong("c"), it.getInt("s"), it.getInt("b"), it.getLong("e"),
+            it.optInt("rd", -1), parseRules(it.optJSONArray("x")))
     }
     private fun writeHabits(c: Context, l: List<Habit>) {
         val a = JSONArray()
         l.forEach {
             a.put(JSONObject().put("id", it.id).put("n", it.name).put("em", it.emoji).put("k", it.kind).put("t", it.target)
                 .put("u", it.unit).put("st", it.step).put("d", it.days).put("ro", it.remOn).put("rf", it.remFrom)
-                .put("rt", it.remTo).put("re", it.remEvery).put("c", it.created).put("s", it.streak).put("b", it.best).put("e", it.ev))
+                .put("rt", it.remTo).put("re", it.remEvery).put("c", it.created).put("s", it.streak).put("b", it.best).put("e", it.ev).put("rd", it.remDays).put("x", rulesJson(it.extra)))
         }
         sp(c).edit().putString("habits", a.toString()).apply()
+    }
+    private fun parseRules(a: JSONArray?): List<RemRule> =
+        if (a == null) emptyList() else List(a.length()) { i -> val q = a.getJSONObject(i); RemRule(q.getInt("d"), q.getInt("f"), q.getInt("t"), q.getInt("e")) }
+    private fun rulesJson(l: List<RemRule>): JSONArray {
+        val a = JSONArray()
+        l.forEach { a.put(JSONObject().put("d", it.days).put("f", it.from).put("t", it.to).put("e", it.every)) }
+        return a
     }
     fun saveHabit(c: Context, h: Habit) {
         val l = habits(c)
