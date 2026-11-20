@@ -42,7 +42,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -110,6 +112,7 @@ class MainActivity : ComponentActivity() {
 sealed interface Page {
     object NewGoal : Page
     object NewLimit : Page
+    class LimitEdit(val pkg: String) : Page
     object FocusSetup : Page
     class SchedEdit(val id: String?) : Page
     class QuietEdit(val id: String?) : Page
@@ -126,6 +129,10 @@ fun Root(startKey: Int, visible: Boolean, launch: String?, consumed: () -> Unit)
     var sub by remember { mutableIntStateOf(0) }
     var lsub by remember { mutableIntStateOf(0) }
     var page by remember { mutableStateOf<Page?>(null) }
+    var onb by remember {
+        mutableStateOf(!Store.onboarded(c) && Store.goals(c).isEmpty() && Store.habits(c).isEmpty() &&
+            Store.limits(c).isEmpty() && Store.scheds(c).isEmpty() && Store.tracks(c).isEmpty())
+    }
     LaunchedEffect(launch) {
         if (launch == "focus") { page = Page.FocusSetup; consumed() }
         else if (launch == "targets") { page = null; tab = 1; sub = 1; consumed() }
@@ -135,6 +142,7 @@ fun Root(startKey: Int, visible: Boolean, launch: String?, consumed: () -> Unit)
     LaunchedEffect(startKey) {
         Store.rollover(c)
         AppRepo.load(c)
+        withContext(Dispatchers.Default) { Store.syncUsage(c) }
         ver++
     }
     // Slow clock. Runs ONLY while the app is on screen (it used to keep ticking in the background).
@@ -164,10 +172,13 @@ fun Root(startKey: Int, visible: Boolean, launch: String?, consumed: () -> Unit)
     Box(Modifier.fillMaxSize().background(Pal.bg)) {
         Box(Modifier.fillMaxWidth().height(420.dp).background(Brush.verticalGradient(listOf(Pal.glow, Color.Transparent))))
         val p = page
-        if (p != null) {
+        if (onb) {
+            Onboarding(now, ver) { Store.setOnboarded(c); onb = false }
+        } else if (p != null) {
             when (p) {
                 is Page.NewGoal -> GoalEditor(close)
-                is Page.NewLimit -> LimitEditor(close)
+                is Page.NewLimit -> LimitEditor(null, close)
+                is Page.LimitEdit -> LimitEditor(p.pkg, close)
                 is Page.FocusSetup -> FocusEditor(close)
                 is Page.SchedEdit -> SchedEditor(p.id, close)
                 is Page.QuietEdit -> QuietEditor(p.id, close)

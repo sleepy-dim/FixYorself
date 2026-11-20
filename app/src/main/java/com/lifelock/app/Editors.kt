@@ -84,17 +84,44 @@ fun GoalEditor(onClose: () -> Unit) {
     if (picker) AppPicker("Block until goal ends", true, apps, { apps = it; picker = false }, { picker = false })
 }
 
+/** Optional: the limit only counts, and only applies, between two times of day. */
 @Composable
-fun LimitEditor(onClose: () -> Unit) {
+fun LimitWindow(r: LimitRule, onChange: (LimitRule) -> Unit) {
+    val all = r.from == r.to
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Pill("All day", all) { onChange(r.copy(from = 0, to = 0)) }
+            Pill("Only certain hours", !all) { onChange(r.copy(from = if (all) 960 else r.from, to = if (all) 1200 else r.to)) }
+        }
+        if (!all) {
+            Row {
+                TimeBtn("From", r.from, Modifier.weight(1f)) { onChange(r.copy(from = it)) }
+                Spacer(Modifier.width(12.dp))
+                TimeBtn("Until", r.to, Modifier.weight(1f)) { onChange(r.copy(to = it)) }
+            }
+            Sub("The limit only counts, and only applies, inside these hours. Outside them the app is free.")
+        }
+    }
+}
+
+@Composable
+fun LimitEditor(initial: String?, onClose: () -> Unit) {
     val c = LocalContext.current
-    var pkg by remember { mutableStateOf<String?>(null) }
-    var mins by remember { mutableIntStateOf(30) }
+    val ex = remember { Store.limits(c).firstOrNull { it.pkg == initial } }
+    val exRules = remember { if (ex == null) emptyList() else Store.rulesOf(ex) }
+    val startBlock = exRules.isNotEmpty() && exRules.all { it.min == 0 && it.from != it.to }
+    var pkg by remember { mutableStateOf(initial) }
+    var mode by remember { mutableIntStateOf(if (startBlock) 1 else 0) }     // 0 time limit, 1 block hours, 2 allow only hours
+    var rules by remember { mutableStateOf(if (ex == null || startBlock) listOf(LimitRule(127, 30)) else exRules) }
+    var adv by remember { mutableStateOf(!startBlock && ex != null && ex.rules.isNotEmpty() && !(ex.rules.size == 1 && ex.rules[0].days == 127 && ex.rules[0].from == ex.rules[0].to)) }
+    var blocks by remember { mutableStateOf(if (startBlock) exRules else listOf(LimitRule(127, 0, 1320, 420))) }
+    var allowed by remember { mutableStateOf(listOf(LimitRule(127, 0, 960, 1380))) }
     var picker by remember { mutableStateOf(false) }
-    EditorPage("Limit an app", onClose) {
-        Surf(onClick = { picker = true }) {
+    EditorPage(if (ex == null) "Limit an app" else "Edit limit", onClose) {
+        Surf(onClick = { if (ex == null) picker = true }) {
             val p = pkg
             if (p == null) {
-                Title("Choose app")
+                Title("Choose an app")
                 Sub("Tap to search your installed apps")
             } else {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -103,16 +130,89 @@ fun LimitEditor(onClose: () -> Unit) {
             }
         }
         Surf {
-            Title("Daily time allowed")
-            Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(15, 30, 45, 60, 90, 120).forEach { Pill("$it min", mins == it) { mins = it } }
+            Title("What should happen?")
+            Spacer(Modifier.height(12.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                ModeCard("⏳", "Daily time limit", "Allow some minutes a day, then lock the app until tomorrow.", mode == 0) { mode = 0 }
+                ModeCard("⛔", "Block at certain times", "Lock the app during hours you choose, like 22:00 to 07:00.", mode == 1) { mode = 1 }
+                ModeCard("🕒", "Allow only at certain times", "Lock the app except during hours you choose, like only 16:00 to 23:00.", mode == 2) { mode = 2 }
             }
-            Stepper("Minutes per day", mins, 5, 600, " min", 5) { mins = it }
-            Sub("Once used up, the app is locked until tomorrow. Limits can be lowered but not raised, and can't be removed for 7 days.")
         }
-        Btn("Save limit", enabled = pkg != null) {
+        if (mode == 0) {
+            Surf {
+                Title("How much time?")
+                Spacer(Modifier.height(8.dp))
+                if (!adv) {
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf(15, 30, 45, 60, 90, 120).forEach { m -> Pill("$m min", rules[0].min == m) { rules = listOf(rules[0].copy(min = m)) } }
+                    }
+                    Stepper("Minutes a day", rules[0].min, 5, 600, " min", 5) { rules = listOf(rules[0].copy(min = it)) }
+                    Spacer(Modifier.height(8.dp))
+                    LimitWindow(rules[0]) { rules = listOf(it) }
+                } else {
+                    rules.forEachIndexed { i, r ->
+                        Column(Modifier.fillMaxWidth().padding(bottom = 12.dp).clip(RoundedCornerShape(16.dp)).background(Pal.card2).padding(14.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("Schedule ${i + 1}", fontWeight = FontWeight.Bold, color = Pal.ink, modifier = Modifier.weight(1f))
+                                if (rules.size > 1) Pill("Remove", false) { rules = rules.filterIndexed { j, _ -> j != i } }
+                            }
+                            Spacer(Modifier.height(10.dp))
+                            DayChips(r.days) { nd -> rules = rules.mapIndexed { j, o -> if (j == i) o.copy(days = nd) else o } }
+                            Stepper("Minutes", r.min, 5, 600, " min", 5) { m -> rules = rules.mapIndexed { j, o -> if (j == i) o.copy(min = m) else o } }
+                            Spacer(Modifier.height(8.dp))
+                            LimitWindow(r) { nr -> rules = rules.mapIndexed { j, o -> if (j == i) nr else o } }
+                        }
+                    }
+                    if (rules.size < 4) Btn("+ Add another schedule", filled = false) { rules = rules + LimitRule(0, 60) }
+                    Sub("Days that no schedule covers have no limit.")
+                }
+                Spacer(Modifier.height(10.dp))
+                Pill(if (adv) "Back to simple" else "Different limits on different days", adv) {
+                    if (adv) { adv = false; val r0 = rules[0]; rules = listOf(LimitRule(127, rules.minOfOrNull { it.min }?.coerceAtLeast(5) ?: 30, r0.from, r0.to)) }
+                    else { adv = true; val r0 = rules[0]; rules = listOf(LimitRule(31, r0.min, r0.from, r0.to), LimitRule(96, r0.min * 2, r0.from, r0.to)) }
+                }
+            }
+        } else {
+            val list = if (mode == 1) blocks else allowed
+            val setList: (List<LimitRule>) -> Unit = { if (mode == 1) blocks = it else allowed = it }
+            Surf {
+                Title(if (mode == 1) "When is it blocked?" else "When is it allowed?")
+                Spacer(Modifier.height(12.dp))
+                list.forEachIndexed { i, r ->
+                    Column(Modifier.fillMaxWidth().padding(bottom = 12.dp).clip(RoundedCornerShape(16.dp)).background(Pal.card2).padding(14.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Time ${i + 1}", fontWeight = FontWeight.Bold, color = Pal.ink, modifier = Modifier.weight(1f))
+                            if (list.size > 1) Pill("Remove", false) { setList(list.filterIndexed { j, _ -> j != i }) }
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        DayChips(r.days) { nd -> setList(list.mapIndexed { j, o -> if (j == i) o.copy(days = nd) else o }) }
+                        Spacer(Modifier.height(10.dp))
+                        Row {
+                            TimeBtn(if (mode == 1) "Blocked from" else "Allowed from", r.from, Modifier.weight(1f)) { v -> setList(list.mapIndexed { j, o -> if (j == i) o.copy(from = v) else o }) }
+                            Spacer(Modifier.width(12.dp))
+                            TimeBtn("Until", r.to, Modifier.weight(1f)) { v -> setList(list.mapIndexed { j, o -> if (j == i) o.copy(to = v) else o }) }
+                        }
+                    }
+                }
+                if (list.size < 4) Btn("+ Add another time", filled = false) { setList(list + list.last().copy(days = 127)) }
+                Sub(if (mode == 1) "On the chosen days the app is locked between these times, and free the rest of the day."
+                    else "On the chosen days the app only works between these times. At any other time it is locked.",
+                    Modifier.padding(top = 8.dp))
+            }
+        }
+        Sub("Once locked, it stays locked until the time passes. You can make a limit stricter later but not looser, and it can't be removed for 7 days.",
+            Modifier.padding(horizontal = 4.dp))
+        Btn("Save", enabled = pkg != null) {
             val p = pkg
-            if (p != null) { if (Store.addLimit(c, p, mins)) onClose() else toast(c, "An existing limit can only be lowered.") }
+            if (p != null) {
+                val out: List<LimitRule>? = when (mode) {
+                    0 -> if (adv && rules.any { it.days == 0 }) null else rules
+                    1 -> if (blocks.any { it.days == 0 || it.from == it.to }) null else blocks
+                    else -> if (allowed.any { it.days == 0 || it.from == it.to }) null else allowed.map { LimitRule(it.days, 0, it.to, it.from) }
+                }
+                if (out == null) toast(c, "Pick at least one day, and different start and end times")
+                else if (Store.setLimit(c, p, out)) onClose() else toast(c, "An existing limit can only be made stricter.")
+            }
         }
     }
     if (picker) AppPicker("Choose app", false, emptySet(), { pkg = it.firstOrNull(); picker = false }, { picker = false })
@@ -216,7 +316,7 @@ fun SchedEditor(id: String?, onClose: () -> Unit) {
                     onClose()
                 }
             }
-            if (ex != null) Btn("Delete schedule", filled = false) { Store.deleteSched(c, ex.id); onClose() }
+            if (ex != null) ConfirmBtn("Delete schedule") { Store.deleteSched(c, ex.id); onClose() }
         }
     }
     if (picker) AppPicker("Choose apps", true, entries.map { it.pkg }.toSet(), { sel ->
@@ -266,6 +366,6 @@ fun QuietEditor(id: String?, onClose: () -> Unit) {
                 ReminderReceiver.schedule(c); onClose()
             }
         }
-        if (ex != null) Btn("Delete", filled = false) { Store.deleteQuiet(c, ex.id); ReminderReceiver.schedule(c); onClose() }
+        if (ex != null) ConfirmBtn("Delete") { Store.deleteQuiet(c, ex.id); ReminderReceiver.schedule(c); onClose() }
     }
 }

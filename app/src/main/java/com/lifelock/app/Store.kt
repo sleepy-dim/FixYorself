@@ -6,11 +6,13 @@ import org.json.JSONObject
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.LocalDateTime
+import java.time.ZoneId
 import java.time.temporal.TemporalAdjusters
 
 data class Goal(val id: String, val title: String, val end: Long, val apps: List<String>,
                 val last: Long, val streak: Int, val best: Int, val created: Long)
-data class Limit(val pkg: String, val min: Int, val streak: Int, val ev: Long, val cd: Long)
+data class LimitRule(val days: Int, val min: Int, val from: Int = 0, val to: Int = 0)   // min 0 = blocked; from == to means all day
+data class Limit(val pkg: String, val min: Int, val streak: Int, val ev: Long, val cd: Long, val rules: List<LimitRule> = emptyList())
 data class Entry(val pkg: String, val cap: Int)
 data class Sched(val id: String, val name: String, val days: Int, val start: Int, val end: Int,
                  val allowOnly: Boolean, val entries: List<Entry>, val created: Long)
@@ -108,25 +110,92 @@ object Store {
     // ---- daily limits ----
     fun limits(c: Context): List<Limit> = cached("limits", sp(c).getString("limits", "[]") ?: "[]") { parseLimits(c) }
     private fun parseLimits(c: Context): List<Limit> = JSONArray(sp(c).getString("limits", "[]")).objs().map {
-        Limit(it.getString("p"), it.getInt("m"), it.getInt("s"), it.getLong("e"), it.getLong("c"))
+        Limit(it.getString("p"), it.getInt("m"), it.getInt("s"), it.getLong("e"), it.getLong("c"),
+            it.optJSONArray("r").let { a -> if (a == null) emptyList() else List(a.length()) { i -> val q = a.getJSONObject(i); LimitRule(q.getInt("d"), q.getInt("m"), q.optInt("f", 0), q.optInt("t", 0)) } })
     }
     fun saveLimits(c: Context, l: List<Limit>) {
         val a = JSONArray()
-        l.forEach { a.put(JSONObject().put("p", it.pkg).put("m", it.min).put("s", it.streak).put("e", it.ev).put("c", it.cd)) }
+        l.forEach { a.put(JSONObject().put("p", it.pkg).put("m", it.min).put("s", it.streak).put("e", it.ev).put("c", it.cd)
+            .put("r", JSONArray().also { ra -> it.rules.forEach { r -> ra.put(JSONObject().put("d", r.days).put("m", r.min).put("f", r.from).put("t", r.to)) } })) }
         sp(c).edit().putString("limits", a.toString()).apply()
     }
-    /** Create, or lower. Never raise. */
-    fun addLimit(c: Context, pkg: String, min: Int): Boolean {
+    fun rulesOf(l: Limit): List<LimitRule> = if (l.rules.isEmpty()) listOf(LimitRule(127, l.min)) else l.rules
+
+    /** The limit rule that applies right now (day AND optional hours), with the day its window started on. Null = no limit right now. */
+    fun activeRule(l: Limit, now: LocalDateTime = LocalDateTime.now()): Pair<LimitRule, Long>? {
+        for (r in rulesOf(l)) { val wd = windowDay(r.days, r.from, r.to, now); if (wd != null) return r to wd }
+        return null
+    }
+    fun ruleKey(pkg: String, r: LimitRule, wd: Long) = if (r.from == r.to) gKey(pkg, wd) else "lw_${pkg}_${r.from}_${r.to}_$wd"
+
+    fun limitSummary(l: Limit): String = rulesOf(l).joinToString(" · ") { r ->
+        val days = if (l.rules.isEmpty()) "every day" else daysLabel(r.days).lowercase()
+        when {
+            r.min == 0 && r.from != r.to -> "Blocked ${hhmm(r.from)}–${hhmm(r.to)}, $days"
+            r.min == 0 -> "Blocked all day, $days"
+            r.from != r.to -> "${r.min} min between ${hhmm(r.from)}–${hhmm(r.to)}, $days"
+            else -> "${r.min} min a day, $days"
+        }
+    }
+
+    /** The most minutes you could use the app on weekday [dow] under this limit (used to stop limits being loosened). */
+    private fun maxUse(l: Limit, dow: Int): Int {
+        val rs = rulesOf(l).filter { (it.days and (1 shl dow)) != 0 }
+        if (rs.isEmpty()) return Int.MAX_VALUE
+        return rs.minOf { r ->
+            if (r.from == r.to) r.min else { val w = (r.to - r.from + 1440) % 1440; minOf(r.min, w) + (1440 - w) }
+        }
+    }
+
+    /** Creates a limit, or replaces one with something at least as strict on every weekday. Never looser. */
+    fun setLimit(c: Context, pkg: String, rules: List<LimitRule>): Boolean {
         val l = limits(c)
         val ex = l.firstOrNull { it.pkg == pkg }
-        if (ex == null) {
-            saveLimits(c, l + Limit(pkg, min, 0, today() - 1, today()))
-        } else {
-            if (min > ex.min) return false
-            saveLimits(c, l.map { if (it.pkg == pkg) it.copy(min = min) else it })
-        }
+        val simple = rules.size == 1 && rules[0].days == 127 && rules[0].from == rules[0].to
+        val nl = Limit(pkg, rules.minOfOrNull { it.min } ?: 0, ex?.streak ?: 0, ex?.ev ?: (today() - 1), ex?.cd ?: today(),
+            if (simple) emptyList() else rules)
+        if (ex != null) for (d in 0..6) if (maxUse(nl, d) > maxUse(ex, d)) return false
+        saveLimits(c, if (ex == null) l + nl else l.map { if (it.pkg == pkg) nl else it })
         return true
     }
+    fun addLimit(c: Context, pkg: String, min: Int): Boolean = setLimit(c, pkg, listOf(LimitRule(127, min)))
+
+    /**
+     * With Usage access, time used comes straight from Android's own records (accurate, and correct even if LifeLock
+     * was not running). Without it, LifeLock falls back to counting itself.
+     */
+    fun syncUsage(c: Context, only: String? = null) {
+        if (!Compat.usageOk(c)) return
+        val now = LocalDateTime.now()
+        val nowMs = System.currentTimeMillis()
+        val z = ZoneId.systemDefault()
+        for (l in limits(c)) {
+            if (only != null && l.pkg != only) continue
+            val ar = activeRule(l, now) ?: continue
+            val r = ar.first
+            val start = LocalDate.ofEpochDay(ar.second).atStartOfDay(z).plusMinutes(if (r.from == r.to) 0L else r.from.toLong()).toInstant().toEpochMilli()
+            usageMem[ruleKey(l.pkg, r, ar.second)] = UsageCalc.ms(c, setOf(l.pkg), start, nowMs)[l.pkg] ?: 0L
+        }
+        for (sc in scheds(c)) {
+            val wd = windowDay(sc.days, sc.start, sc.end, now) ?: continue
+            val capped = sc.entries.filter { it.cap > 0 && (only == null || it.pkg == only) }.map { it.pkg }.toSet()
+            if (capped.isEmpty()) continue
+            val start = LocalDate.ofEpochDay(wd).atStartOfDay(z).plusMinutes(sc.start.toLong()).toInstant().toEpochMilli()
+            val m = UsageCalc.ms(c, capped, start, nowMs)
+            capped.forEach { usageMem["s_${sc.id}_${it}_$wd"] = m[it] ?: 0L }
+        }
+    }
+
+    private fun usedForRule(c: Context, pkg: String, r: LimitRule, d: Long): Long {
+        if (Compat.usageOk(c) && today() - d <= 6) {
+            val day = LocalDate.ofEpochDay(d).atStartOfDay(ZoneId.systemDefault())
+            val a = day.plusMinutes(if (r.from == r.to) 0L else r.from.toLong())
+            val b = if (r.from == r.to) day.plusDays(1) else if (r.to > r.from) day.plusMinutes(r.to.toLong()) else day.plusDays(1).plusMinutes(r.to.toLong())
+            return UsageCalc.ms(c, setOf(pkg), a.toInstant().toEpochMilli(), b.toInstant().toEpochMilli())[pkg] ?: 0L
+        }
+        return used(c, ruleKey(pkg, r, d))
+    }
+
     /** Locked for 7 days after creation. */
     fun removeLimit(c: Context, pkg: String): Boolean {
         val x = limits(c).firstOrNull { it.pkg == pkg } ?: return true
@@ -159,7 +228,8 @@ object Store {
     fun remainingMs(c: Context, p: String, now: LocalDateTime): Long {
         var best = Long.MAX_VALUE
         val l = limits(c).firstOrNull { it.pkg == p }
-        if (l != null) { val k = gKey(p); best = minOf(best, (l.min + extra(c, k)) * 60000L - used(c, k)) }
+        val ar = if (l != null) activeRule(l, now) else null
+        if (l != null && ar != null) { val k = ruleKey(p, ar.first, ar.second); best = minOf(best, (ar.first.min + extra(c, k)) * 60000L - used(c, k)) }
         for (s in scheds(c)) {
             val wd = windowDay(s.days, s.start, s.end, now) ?: continue
             val e = s.entries.firstOrNull { it.pkg == p } ?: continue
@@ -174,15 +244,14 @@ object Store {
         val fu = focusUntil(c) - System.currentTimeMillis()
         if (fu > 0) best = fu
         val today = now.toLocalDate()
-        for (s in scheds(c)) {
+        fun consider(m: Int) {
             for (d in 0..7) {
-                val day = today.plusDays(d.toLong())
-                for (m in intArrayOf(s.start, s.end)) {
-                    val t = day.atStartOfDay().plusMinutes(m.toLong())
-                    if (t.isAfter(now)) { val ms = java.time.Duration.between(now, t).toMillis(); if (ms < best) best = ms }
-                }
+                val t = today.plusDays(d.toLong()).atStartOfDay().plusMinutes(m.toLong())
+                if (t.isAfter(now)) { val ms = java.time.Duration.between(now, t).toMillis(); if (ms < best) best = ms }
             }
         }
+        for (sc in scheds(c)) { consider(sc.start); consider(sc.end) }
+        for (l in limits(c)) for (r in rulesOf(l)) if (r.from != r.to) { consider(r.from); consider(r.to) }
         return best
     }
     fun extra(c: Context, key: String) = sp(c).getInt("x_$key", 0)
@@ -198,7 +267,10 @@ object Store {
             if (t - ev > 14) { ev = t - 14; ch = true }
             while (ev < t - 1) {
                 val d = ev + 1
-                val ok = used(c, gKey(x.pkg, d)) <= x.min * 60000L && extra(c, gKey(x.pkg, d)) == 0
+                val dow = LocalDate.ofEpochDay(d).dayOfWeek.value - 1
+                val ok = rulesOf(x).filter { (it.days and (1 shl dow)) != 0 }.all { r ->
+                    extra(c, ruleKey(x.pkg, r, d)) == 0 && usedForRule(c, x.pkg, r, d) <= r.min * 60000L
+                }
                 st = if (ok) st + 1 else 0
                 ev = d; ch = true
             }
@@ -323,9 +395,16 @@ object Store {
     fun deleteHabit(c: Context, id: String) = writeHabits(c, habits(c).filter { it.id != id })
     fun hLog(c: Context, id: String, d: Long = today()) = sp(c).getInt("hl_${id}_$d", 0)
     fun hSet(c: Context, id: String, v: Int) = sp(c).edit().putInt("hl_${id}_${today()}", v.coerceAtLeast(0)).apply()
-    fun hAdd(c: Context, id: String, delta: Int) = hSet(c, id, hLog(c, id) + delta)
+    fun hAdd(c: Context, id: String, delta: Int) {
+        hSet(c, id, hLog(c, id) + delta)
+        if (delta > 0) sp(c).edit().putLong("hlt_$id", System.currentTimeMillis()).apply()
+    }
+    /** When this habit was last logged (ms), used to skip reminders for open-ended habits like "walk". */
+    fun hLast(c: Context, id: String) = sp(c).getLong("hlt_$id", 0L)
+    /** Best single day in the previous 60 days (today excluded): the record to beat for "as many as I can" habits. */
+    fun hBest(c: Context, id: String, t: Long): Int = (1..60).maxOfOrNull { hLog(c, id, t - it) } ?: 0
     fun hActive(h: Habit, d: Long) = (h.days and (1 shl (LocalDate.ofEpochDay(d).dayOfWeek.value - 1))) != 0
-    fun met(h: Habit, v: Int) = when (h.kind) { 0 -> v >= 1; 1 -> v >= h.target; else -> v in 1..h.target }
+    fun met(h: Habit, v: Int) = when (h.kind) { 0 -> v >= 1; 1 -> v >= maxOf(h.target, 1); else -> v in 1..h.target }
     fun hStreak(c: Context, h: Habit) =
         h.streak + (if (h.kind != 2 && hActive(h, today()) && met(h, hLog(c, h.id))) 1 else 0)
     private fun habitRollover(c: Context) {
@@ -395,6 +474,14 @@ object Store {
         goals(c).any { p in it.apps } || limits(c).any { it.pkg == p } || scheds(c).any { s -> s.entries.any { it.pkg == p } }
 
     fun theme(c: Context) = sp(c).getInt("theme", 1)
+    fun onboarded(c: Context) = sp(c).getBoolean("onb", false)
+    fun setOnboarded(c: Context) = sp(c).edit().putBoolean("onb", true).apply()
+    /** The last few reminders that were actually sent, with the hours they were set for, so odd timings can be traced. */
+    fun logNotif(c: Context, line: String) {
+        val old = (sp(c).getString("nlog", "") ?: "").split('\n').filter { it.isNotBlank() }
+        sp(c).edit().putString("nlog", (listOf(line) + old).take(8).joinToString("\n")).apply()
+    }
+    fun notifLog(c: Context): List<String> = (sp(c).getString("nlog", "") ?: "").split('\n').filter { it.isNotBlank() }
     fun lowPower(c: Context) = sp(c).getBoolean("lowpower", false)
     fun setLowPower(c: Context, v: Boolean) = sp(c).edit().putBoolean("lowpower", v).apply()
     fun quickHabit(c: Context) = sp(c).getString("qh", "") ?: ""
@@ -403,7 +490,7 @@ object Store {
     // ---- rule engine ----
     fun trackKeys(c: Context, p: String, now: LocalDateTime): List<String> {
         val r = mutableListOf<String>()
-        if (limits(c).any { it.pkg == p }) r.add(gKey(p))
+        limits(c).firstOrNull { it.pkg == p }?.let { l -> activeRule(l, now)?.let { ar -> r.add(ruleKey(p, ar.first, ar.second)) } }
         for (s in scheds(c)) {
             val wd = windowDay(s.days, s.start, s.end, now) ?: continue
             val e = s.entries.firstOrNull { it.pkg == p } ?: continue
@@ -435,10 +522,12 @@ object Store {
             }
         }
         val l = limits(c).firstOrNull { it.pkg == p }
-        if (l != null) {
-            val key = gKey(p)
-            if (used(c, key) >= (l.min + extra(c, key)) * 60000L)
-                return Block("limit", "Daily limit reached (${l.min} min).", key)
+        val ar = if (l != null) activeRule(l, now) else null
+        if (l != null && ar != null) {
+            val key = ruleKey(p, ar.first, ar.second)
+            val a = ar.first.min
+            if (used(c, key) >= (a + extra(c, key)) * 60000L)
+                return Block("limit", if (a == 0) "This app is blocked right now." else "Limit reached ($a min${if (ar.first.from != ar.first.to) " in this window" else " today"}).", key)
         }
         return null
     }

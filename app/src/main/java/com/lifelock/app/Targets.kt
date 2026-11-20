@@ -280,6 +280,7 @@ fun TargetEditor(id: String?, onClose: () -> Unit) {
                     Spacer(Modifier.width(12.dp))
                     TimeBtn("Until", rTo, Modifier.weight(1f)) { rTo = it }
                 }
+                if (rFrom > rTo) Sub("⚠️ This window runs past midnight, until ${hhmm(rTo)} the next day.", Modifier.padding(top = 8.dp), Pal.orange)
                 Spacer(Modifier.height(12.dp))
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf(60 to "1 hour", 120 to "2 hours", 180 to "3 hours", 240 to "4 hours", 360 to "6 hours").forEach { (m, l) ->
@@ -315,6 +316,6 @@ fun TargetEditor(id: String?, onClose: () -> Unit) {
                 onClose()
             }
         }
-        if (ex != null) Btn("Delete target", filled = false) { Store.deleteTrack(c, ex.id); ReminderReceiver.schedule(c); onClose() }
+        if (ex != null) ConfirmBtn("Delete target") { Store.deleteTrack(c, ex.id); ReminderReceiver.schedule(c); onClose() }
     }
 }

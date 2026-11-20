@@ -167,6 +167,36 @@ fun Btn(t: String, modifier: Modifier = Modifier, filled: Boolean = true, color:
 }
 
 @Composable
+fun ModeCard(emoji: String, title: String, desc: String, on: Boolean, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(18.dp)
+    Row(Modifier.fillMaxWidth().clip(shape).background(if (on) Pal.accent.copy(alpha = 0.14f) else Pal.card2)
+        .border(1.5.dp, if (on) Pal.accent else Pal.line, shape).clickable(onClick = onClick).padding(14.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        IconChip(emoji, if (on) Pal.accent else Pal.muted, 42.dp)
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, color = Pal.ink, fontWeight = FontWeight.Bold)
+            Sub(desc)
+        }
+        if (on) Text("✓", color = Pal.accent, fontWeight = FontWeight.ExtraBold, fontSize = 18.sp)
+    }
+}
+
+/** A delete button that asks first. */
+@Composable
+fun ConfirmBtn(t: String, onConfirm: () -> Unit) {
+    var ask by remember { mutableStateOf(false) }
+    Btn(t, filled = false) { ask = true }
+    if (ask) AlertDialog(
+        onDismissRequest = { ask = false }, containerColor = Pal.card,
+        title = { Text("$t?", color = Pal.ink) },
+        text = { Text("This can't be undone.", color = Pal.muted) },
+        confirmButton = { TextButton(onClick = { ask = false; onConfirm() }) { Text("Yes, delete", color = Pal.red) } },
+        dismissButton = { TextButton(onClick = { ask = false }) { Text("Cancel") } }
+    )
+}
+
+@Composable
 fun Pill(t: String, on: Boolean, onClick: () -> Unit) {
     val shape = RoundedCornerShape(50)
     Text(t, color = if (on) Color.White else Pal.text2, fontSize = 14.sp,
@@ -223,11 +253,11 @@ fun RoundBtn(t: String, onClick: () -> Unit) {
 }
 
 @Composable
-fun Stepper(label: String, value: Int, min: Int, max: Int, suffix: String = "", step: Int = 1, onChange: (Int) -> Unit) {
+fun Stepper(label: String, value: Int, min: Int, max: Int, suffix: String = "", step: Int = 1, zero: String = "None", onChange: (Int) -> Unit) {
     Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(label, color = Pal.text2, modifier = Modifier.weight(1f))
         RoundBtn("−") { onChange((value - step).coerceAtLeast(min)) }
-        Text(if (value == 0 && suffix.isNotEmpty()) "None" else "$value$suffix", color = Pal.ink, fontWeight = FontWeight.Bold,
+        Text(if (value == 0 && suffix.isNotEmpty()) zero else "$value$suffix", color = Pal.ink, fontWeight = FontWeight.Bold,
             textAlign = TextAlign.Center, modifier = Modifier.width(84.dp))
         RoundBtn("+") { onChange((value + step).coerceAtMost(max)) }
     }

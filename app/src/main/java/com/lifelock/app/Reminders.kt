@@ -16,6 +16,13 @@ import java.time.ZoneId
 data class Src(val key: String, val from: Int, val to: Int, val every: Int, val days: Int)
 
 object Reminders {
+    @Volatile private var cur: Src? = null
+    private fun logN(c: Context, what: String) {
+        val n = LocalDateTime.now()
+        val s = cur
+        Store.logNotif(c, "%02d:%02d  %s".format(n.hour, n.minute, what) +
+            (if (s != null) "  [set for ${hhmm(s.from)}–${hhmm(s.to)}, every ${s.every} min]" else ""))
+    }
     fun sources(c: Context): List<Src> {
         val r = Store.rem(c)
         val l = mutableListOf<Src>()
@@ -82,6 +89,7 @@ object Reminders {
 
     /** Called when a reminder is due. Re-checks the rules at delivery time, so late alarms never ping you at a bad time. */
     fun fire(c: Context, s: Src, now: LocalDateTime) {
+        cur = s
         if (!inRange(now.hour * 60 + now.minute, s.from, s.to) || !dayOk(s, now) || inQuiet(Store.quiets(c), now)) return
         if (s.key == "goal") { send(c); return }
         if (s.key.startsWith("t_")) {
@@ -97,7 +105,12 @@ object Reminders {
         val t = Store.today()
         if (!Store.hActive(h, t)) return
         val v = Store.hLog(c, h.id, t)
-        if (h.kind == 2) { if (v == 0) notifyHabit(c, h, v) } else if (!Store.met(h, v)) notifyHabit(c, h, v)
+        if (h.kind == 1 && h.target == 0) {
+            // open-ended ("walk whenever"): keep reminding, but skip if you logged one recently
+            val due = if (s.every >= 1440) v == 0 else System.currentTimeMillis() - Store.hLast(c, h.id) >= s.every * 60000L
+            if (due) notifyHabit(c, h, v)
+        } else if (h.kind == 2) { if (v == 0) notifyHabit(c, h, v) }
+        else if (!Store.met(h, v)) notifyHabit(c, h, v)
     }
 
     private fun channel(c: Context, id: String, name: String, imp: Int = NotificationManager.IMPORTANCE_HIGH): NotificationManager {
@@ -110,11 +123,12 @@ object Reminders {
 
     fun notifyHabit(c: Context, h: Habit, v: Int) {
         Store.bump(c, "notifs")
+        logN(c, h.name)
         val nm = channel(c, "habits", "Habit reminders")
         val open = PendingIntent.getActivity(c, 0, Intent(c, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
         val txt = when (h.kind) {
             0 -> "Time to do it."
-            1 -> "$v / ${h.target} ${h.unit} so far"
+            1 -> if (h.target == 0) "$v ${h.unit} so far today".trim() else "$v / ${h.target} ${h.unit} so far"
             else -> "Nothing logged yet today — log it."
         }
         val amount = if (h.kind == 0) 1 else h.step
@@ -129,6 +143,7 @@ object Reminders {
 
     fun notifyTrack(c: Context, tr: Track) {
         Store.bump(c, "notifs")
+        logN(c, tr.name)
         val nm = channel(c, "targets", "Target reminders", NotificationManager.IMPORTANCE_DEFAULT)
         val open = PendingIntent.getActivity(c, 20, Intent(c, MainActivity::class.java).putExtra("go", "targets"),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
@@ -143,6 +158,7 @@ object Reminders {
         val pend = all.filter { t < it.end && it.last != t }
         if (pend.isEmpty() && !test) return
         Store.bump(c, "notifs")
+        logN(c, if (test) "test notification" else "goal check-in")
         val best = all.maxOfOrNull { Store.liveStreak(it) } ?: 0
         val nm = channel(c, "remind", "Check-in reminders")
         val open = PendingIntent.getActivity(c, 0, Intent(c, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)

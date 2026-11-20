@@ -28,6 +28,10 @@ class GuardService : AccessibilityService() {
     private var last = System.currentTimeMillis()
     private var lastBlock = 0L
     private var lastChk = 0L
+    private var sysAt = 0L
+    private var syncPkg = ""
+    private var syncAt = 0L
+    private var sysOk = false
     private var blockWin = 0L
     private var blockN = 0
     private var essAt = 0L
@@ -56,7 +60,7 @@ class GuardService : AccessibilityService() {
                 accrue(); Store.flushUsage(this@GuardService, true); screenOn = false; h.removeCallbacks(tick)
             } else if (i?.action == Intent.ACTION_SCREEN_ON) {
                 screenOn = true; last = System.currentTimeMillis()
-                h.postDelayed({ check(fg) }, 600L)   // catches schedules that started while the screen was off
+                h.postDelayed({ if (sysUsage()) Store.syncUsage(this@GuardService, fg); check(fg) }, 600L)   // catches schedules that started while the screen was off
                 planNext()
             }
         }
@@ -78,7 +82,7 @@ class GuardService : AccessibilityService() {
             rxOn = true
         }
         fg = Compat.lastForeground(this)
-        if (fg.isNotEmpty()) check(fg)
+        if (fg.isNotEmpty()) { if (sysUsage()) Store.syncUsage(this, fg); check(fg) }
         planNext()
     }
 
@@ -90,6 +94,7 @@ class GuardService : AccessibilityService() {
         Store.bump(this, "events")
         if (p != fg) {
             accrue(); Store.flushUsage(this); fg = p
+            if (sysUsage()) syncFg(p, false)
             check(p)
             planNext()
         } else if (System.currentTimeMillis() - lastChk > 3000L) {
@@ -119,19 +124,35 @@ class GuardService : AccessibilityService() {
         var wait = Store.nextChangeMs(this, now)
         if (fg.isNotEmpty()) {
             val rem = Store.remainingMs(this, fg, now)
-            if (rem != Long.MAX_VALUE) wait = minOf(wait, rem.coerceAtMost(300000L))
+            if (rem != Long.MAX_VALUE) wait = minOf(wait, if (sysUsage()) rem else rem.coerceAtMost(300000L))   // with Android's numbers one exact timer is enough
         }
         if (wait == Long.MAX_VALUE) return                      // nothing time-based: stay completely idle
-        h.postDelayed(tick, wait.coerceAtLeast(1000L) + 300L)
+        h.postDelayed(tick, wait.coerceAtLeast(1500L) + 300L)
     }
 
     /** Adds the time since the last check to whichever app was in front. */
+    /** True when Usage access is granted, so Android's own numbers are used (cached for a minute). */
+    private fun sysUsage(): Boolean {
+        val n = System.currentTimeMillis()
+        if (n - sysAt > 60000L) { sysOk = Compat.usageOk(this); sysAt = n }
+        return sysOk
+    }
+
+    /** Reads Android's usage numbers for [p]; skipped if it was just done (switching in and out of an app is common). */
+    private fun syncFg(p: String, force: Boolean) {
+        val n = System.currentTimeMillis()
+        if (!force && p == syncPkg && n - syncAt < 20000L) return
+        syncPkg = p; syncAt = n
+        Store.syncUsage(this, p)
+    }
+
     private fun accrue() {
         val now = System.currentTimeMillis()
-        val dt = (now - last).coerceIn(0L, 60000L)
+        val dt = (now - last).coerceIn(0L, 900000L)
         last = now
-        if (fg.isNotEmpty() && screenOn)
-            Store.trackKeys(this, fg, LocalDateTime.now()).forEach { Store.addUsed(this, it, dt) }
+        if (fg.isEmpty() || !screenOn) return
+        if (sysUsage()) syncFg(fg, true)          // Android measured it: no counting of our own
+        else Store.trackKeys(this, fg, LocalDateTime.now()).forEach { Store.addUsed(this, it, dt) }
     }
 
     private fun isUserApp(p: String) = launchable.getOrPut(p) { packageManager.getLaunchIntentForPackage(p) != null }

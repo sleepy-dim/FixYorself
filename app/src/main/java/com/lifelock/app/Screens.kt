@@ -137,6 +137,24 @@ fun TodayScreen(ver: Int, now: Long, go: (Page) -> Unit, bump: () -> Unit) {
             }
         }
         item { SetupCard(now) }
+        if (Store.habits(c).isEmpty() || Store.goals(c).isEmpty() || (Store.limits(c).isEmpty() && Store.scheds(c).isEmpty())) item {
+            val steps = listOf(
+                Triple("Add a habit, like drinking water", Store.habits(c).isNotEmpty(), Page.HabitEdit(null) as Page),
+                Triple("Limit or block a distracting app", Store.limits(c).isNotEmpty() || Store.scheds(c).isNotEmpty(), Page.NewLimit as Page),
+                Triple("Set a goal with a deadline", Store.goals(c).isNotEmpty(), Page.NewGoal as Page))
+            Surf {
+                Title("Get started")
+                Sub("Three quick things to try. Tap one.", Modifier.padding(top = 2.dp, bottom = 6.dp))
+                steps.forEach { (label, done, target) ->
+                    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable { go(target) }.padding(vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        CircleCheck(done) { go(target) }
+                        Spacer(Modifier.width(14.dp))
+                        Text(label, color = if (done) Pal.muted else Pal.ink, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+            }
+        }
         item {
             Surf(brush = Brush.linearGradient(listOf(Color(0xFF6D4DF6), Color(0xFF3F7CF5)))) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -219,9 +237,8 @@ fun HabitRow(h: Habit, t: Long, ver: Int, bump: () -> Unit) {
             Text(h.name, color = Pal.ink, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
             if (h.kind == 0) Sub(if (met) "Done" else "To do")
             else {
-                Sub("$v / ${h.target} ${h.unit}")
-                Spacer(Modifier.height(6.dp))
-                Bar(frac, col, 5.dp)
+                Sub(if (h.kind == 1 && h.target == 0) ("$v ${h.unit} today" + (if (Store.hBest(c, h.id, t) > 0) " · best ${Store.hBest(c, h.id, t)}" else "")).trim() else "$v / ${h.target} ${h.unit}")
+                if (!(h.kind == 1 && h.target == 0)) { Spacer(Modifier.height(6.dp)); Bar(frac, col, 5.dp) }
             }
         }
         Spacer(Modifier.width(14.dp))
@@ -294,28 +311,39 @@ fun LimitsScreen(ver: Int, now: Long, sub: Int, onSub: (Int) -> Unit, go: (Page)
                 Pill("Insights", sub == 1) { onSub(1) }
             }
         }
+        if (sub == 0 && !Compat.usageOk(c)) item {
+            Surf {
+                Title("Use Android's own usage numbers")
+                Sub("Allow Usage access and LifeLock reads exact app time from Android instead of counting itself. More accurate, and it saves battery.",
+                    Modifier.padding(top = 4.dp))
+                Btn("Grant usage access", Modifier.padding(top = 12.dp)) { Perm.open(c, Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) }
+            }
+        }
         if (sub == 0) {
             if (limits.isEmpty()) item { EmptyState("⏳", "No limits yet", "Give Instagram, YouTube or any app a daily budget. Not sure which? Check Insights.") }
-            items(limits, key = { it.pkg }) { l -> LimitCard(l, now, bump) }
+            items(limits, key = { it.pkg }) { l -> LimitCard(l, now, go, bump) }
         } else insightsItems(c, data, range, { range = it }, bump)
     }
 }
 
 @Composable
-fun LimitCard(l: Limit, now: Long, bump: () -> Unit) {
+fun LimitCard(l: Limit, now: Long, go: (Page) -> Unit, bump: () -> Unit) {
     val c = LocalContext.current
-    val key = Store.gKey(l.pkg)
+    val ar = Store.activeRule(l)
+    val key = if (ar != null) Store.ruleKey(l.pkg, ar.first, ar.second) else Store.gKey(l.pkg)
+    val a = ar?.first?.min ?: -1
     val used = Store.used(c, key) / 60000
-    val cap = l.min + Store.extra(c, key)
-    val frac = (used.toFloat() / cap).coerceIn(0f, 1f)
+    val cap = if (a < 0) 0 else a + Store.extra(c, key)
+    val frac = if (a < 0) 0f else if (cap == 0) 1f else (used.toFloat() / cap).coerceIn(0f, 1f)
     val col = if (frac >= 1f) Pal.red else if (frac > 0.7f) Pal.orange else Pal.accent
-    Surf {
+    Surf(onClick = { go(Page.LimitEdit(l.pkg)) }) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             AppIcon(l.pkg, 52.dp)
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
                 Title(AppRepo.label(l.pkg))
-                Sub(if (frac >= 1f) "Locked until tomorrow" else "${cap - used} min left today", color = if (frac >= 1f) Pal.red else Pal.muted)
+                Sub(if (a < 0) "No limit right now" else if (frac >= 1f) (if (a == 0) (if (ar != null && ar.first.from != ar.first.to) "Blocked until ${hhmm(ar.first.to)}" else "Blocked today") else "Locked until tomorrow") else "${cap - used} min left today",
+                    color = if (a >= 0 && frac >= 1f) Pal.red else Pal.muted)
             }
             IconButton(onClick = {
                 if (Store.removeLimit(c, l.pkg)) bump() else toast(c, "Limits are locked for 7 days after you create them.")
@@ -325,9 +353,11 @@ fun LimitCard(l: Limit, now: Long, bump: () -> Unit) {
         Bar(frac, col)
         Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Chip("$used / $cap min", col)
+            if (a >= 0) Chip("$used / $cap min", col)
             Chip("🔥 ${l.streak} days under", Pal.green)
         }
+        Sub(Store.limitSummary(l) + (if (Compat.usageOk(c)) " · time read from Android" else " · counted by LifeLock (allow Usage access for exact time)"),
+            Modifier.padding(top = 10.dp))
     }
 }
 
@@ -389,14 +419,16 @@ fun SettingsScreen(ver: Int, now: Long, go: (Page) -> Unit, bump: () -> Unit) {
     val c = LocalContext.current
     val rem = Store.rem(c)
     val quiets = Store.quiets(c)
+    val appVer = try { c.packageManager.getPackageInfo(c.packageName, 0).versionName } catch (e: Exception) { "?" }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 40.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        item { ScreenTitle("Settings") }
+        item { ScreenTitle("Settings", "LifeLock version $appVer") }
         item {
             Surf {
                 Title("Protection status")
                 StatusLine(Perm.guard(c), "Blocking engine")
                 StatusLine(Perm.overlay(c), "Block screen over apps")
                 StatusLine(Perm.notif(c), "Notifications")
+                StatusLine(Compat.usageOk(c), "Usage access (exact time limits)")
                 Sub(if (GuardService.inst == null) "Engine is not running."
                     else "Since it started ${(System.currentTimeMillis() - GuardService.startedAt) / 60000} min ago: ${GuardService.events} app switches, ${GuardService.ticks} timer wake-ups.",
                     Modifier.padding(top = 12.dp))
@@ -470,6 +502,21 @@ fun SettingsScreen(ver: Int, now: Long, go: (Page) -> Unit, bump: () -> Unit) {
             }
             item { Btn("+ Add quiet time", filled = false) { go(Page.QuietEdit(null)) } }
         }
+        item { SectionLabel("Help") }
+        item {
+            Surf {
+                Title("Quick answers")
+                listOf(
+                    "Blocking isn't working" to "Check Protection status above: every line should say On. Also set LifeLock's battery to Unrestricted, and if Accessibility is greyed out, allow restricted settings in App info.",
+                    "An app was blocked by mistake" to "The lock screen shows the app's ID at the bottom. Note it so the app can be added to the exempt list.",
+                    "I can't delete a goal or limit" to "They lock on purpose so you can't talk yourself out of them. Goals unlock after 10 minutes or when they end. Limits unlock after 7 days.",
+                    "A reminder came at the wrong time" to "Check Quiet times. Diagnostics below lists the last reminders sent and the hours each one was set for."
+                ).forEach { (q, a) ->
+                    Text(q, color = Pal.ink, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 14.dp))
+                    Sub(a, Modifier.padding(top = 2.dp))
+                }
+            }
+        }
         item { SectionLabel("Diagnostics") }
         item {
             val day = Store.today()
@@ -483,10 +530,16 @@ fun SettingsScreen(ver: Int, now: Long, go: (Page) -> Unit, bump: () -> Unit) {
                         Text("${Store.diag(c, k, day)} / ${Store.diag(c, k, day - 1)}", color = Pal.ink, fontWeight = FontWeight.SemiBold)
                     }
                 }
+                val rlog = Store.notifLog(c)
+                if (rlog.isNotEmpty()) {
+                    Text("Recent reminders", color = Pal.ink, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 16.dp))
+                    rlog.forEach { Text(it, fontSize = 12.sp, color = Pal.text2, modifier = Modifier.padding(top = 4.dp)) }
+                }
                 Sub("Low numbers mean LifeLock is mostly asleep. If your battery page still shows it high, send me this report.", Modifier.padding(top = 12.dp))
                 Btn("Copy report", Modifier.padding(top = 12.dp), filled = false) {
                     val sb = StringBuilder("LifeLock diagnostics (today / yesterday)\n")
                     rows.forEach { (k, l) -> sb.append("$l: ${Store.diag(c, k, day)} / ${Store.diag(c, k, day - 1)}\n") }
+                    sb.append("Recent reminders:\n"); Store.notifLog(c).forEach { sb.append("  $it\n") }
                     sb.append("Engine running: ${GuardService.inst != null}, compat helper: ${WatchService.alive}, battery-saver reminders: ${Store.lowPower(c)}\n")
                     c.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("lifelock", sb.toString()))
                     toast(c, "Copied")

@@ -56,7 +56,7 @@ private class Tpl(val name: String, val emoji: String, val kind: Int, val target
 
 private val TPLS = listOf(
     Tpl("Drink water", "💧", 1, 3000, "ml", 250, 480, 1320, 90),
-    Tpl("Walk break", "🚶", 1, 8, "walks", 1, 540, 1140, 60),
+    Tpl("Walk break", "🚶", 1, 0, "walks", 1, 540, 1140, 60),
     Tpl("Daily walk", "🚶", 0, 1, "", 1, 1020, 1200, 60),
     Tpl("Calories", "🍽️", 2, 1300, "kcal", 100, 540, 1260, 240),
     Tpl("Steps", "👟", 1, 8000, "steps", 1000, 600, 1200, 120),
@@ -123,8 +123,13 @@ fun HabitCard(h: Habit, t: Long, ver: Int, go: (Page) -> Unit, bump: () -> Unit)
     val active = Store.hActive(h, t)
     val met = Store.met(h, v)
     val cd = Instant.ofEpochMilli(h.created).atZone(ZoneId.systemDefault()).toLocalDate().toEpochDay()
-    val frac = if (h.kind == 0) (if (met) 1f else 0f) else (v.toFloat() / h.target.coerceAtLeast(1)).coerceIn(0f, 1f)
-    val col = if (h.kind == 2 && v > h.target) Pal.red else if (met) Pal.green else Pal.accent
+    val open = h.kind == 1 && h.target == 0
+    val best = if (open) Store.hBest(c, h.id, t) else 0
+    val frac = if (h.kind == 0) (if (met) 1f else 0f)
+        else if (open) (if (best == 0) (if (v > 0) 1f else 0f) else (v.toFloat() / best).coerceIn(0f, 1f))
+        else (v.toFloat() / h.target.coerceAtLeast(1)).coerceIn(0f, 1f)
+    val col = if (open) (if (best > 0 && v > best) Pal.green else Pal.accent)
+        else if (h.kind == 2 && v > h.target) Pal.red else if (met) Pal.green else Pal.accent
     var custom by remember { mutableStateOf(false) }
     var txt by remember { mutableStateOf("") }
     Surf(onClick = { go(Page.HabitEdit(h.id)) }) {
@@ -135,21 +140,26 @@ fun HabitCard(h: Habit, t: Long, ver: Int, go: (Page) -> Unit, bump: () -> Unit)
                 Title(h.name)
                 Text(if (!active) "Rest day" else when (h.kind) {
                     0 -> if (met) "Done ✓" else "Not done yet"
-                    1 -> "$v / ${h.target} ${h.unit}"
+                    1 -> if (h.target == 0) "$v ${h.unit} today".trim() else "$v / ${h.target} ${h.unit}"
                     else -> "$v / ${h.target} ${h.unit} max"
                 }, fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, color = if (active) col else Pal.muted)
+                if (open && active) Sub(
+                    if (best == 0) "Log your first one to set a record"
+                    else if (v > best) "🎉 New record! Previous best: $best"
+                    else "Best day: $best · ${best - v + 1} more to beat it")
             }
             Chip("🔥 ${Store.hStreak(c, h)}", Pal.orange)
         }
         Spacer(Modifier.height(16.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            val weekMax = (0..6).maxOf { Store.hLog(c, h.id, t - it) }
             for (i in 6 downTo 0) {
                 val d = t - i
                 val on = Store.hActive(h, d) && d >= cd
                 val pv = Store.hLog(c, h.id, d)
                 val f = if (!on) 0f else when (h.kind) {
                     0 -> if (pv >= 1) 1f else 0f
-                    1 -> (pv.toFloat() / h.target.coerceAtLeast(1)).coerceIn(0f, 1f)
+                    1 -> (pv.toFloat() / (if (h.target == 0) weekMax.coerceAtLeast(1) else h.target)).coerceIn(0f, 1f)
                     else -> if (pv > 0) 1f else 0f
                 }
                 val bc = if (h.kind == 2 && pv > h.target) Pal.red else if (Store.met(h, pv)) Pal.green else Pal.accent
@@ -208,7 +218,7 @@ fun RuleEditor(r: RemRule, showDays: Boolean, onChange: (RemRule) -> Unit) {
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Pill("Once a day", once) { onChange(r.copy(every = 1440, to = r.from)) }
             Pill("Repeat through the day", !once) {
-                onChange(r.copy(every = if (r.every >= 1440) 60 else r.every, to = if (r.from == r.to) (r.from + 720) % 1440 else r.to))
+                onChange(r.copy(every = if (r.every >= 1440) 60 else r.every, to = if (r.from == r.to) (r.from + 720).coerceAtMost(1439) else r.to))
             }
         }
         if (once) {
@@ -223,6 +233,7 @@ fun RuleEditor(r: RemRule, showDays: Boolean, onChange: (RemRule) -> Unit) {
                 Spacer(Modifier.width(12.dp))
                 TimeBtn("Until", r.to, Modifier.weight(1f)) { onChange(r.copy(to = it)) }
             }
+            if (!allDay && r.from > r.to) Sub("⚠️ This window runs past midnight, until ${hhmm(r.to)} the next day.", color = Pal.orange)
             Sub("How often")
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf(30 to "30 min", 60 to "1 hour", 90 to "90 min", 120 to "2 hours", 180 to "3 hours", 240 to "4 hours").forEach { (m, l) ->
@@ -255,10 +266,12 @@ fun HabitEditor(id: String?, onClose: () -> Unit) {
             else listOf(RemRule(127, 480, 1320, 60))
         )
     }
+    var open by remember { mutableStateOf(ex != null && ex.kind == 1 && ex.target == 0) }
     var adv by remember { mutableStateOf(ex != null && (ex.extra.isNotEmpty() || (ex.remDays >= 0 && ex.remDays != ex.days))) }
 
     fun useTpl(t: Tpl) {
         name = t.name; emoji = t.emoji; kind = t.kind; target = t.target; unit = t.unit; step = t.step
+        open = t.kind == 1 && t.target == 0
         remOn = true; adv = false; rules = listOf(RemRule(127, t.from, t.to, t.every))
     }
 
@@ -277,24 +290,22 @@ fun HabitEditor(id: String?, onClose: () -> Unit) {
         }
         Surf {
             Title("How do you do it?")
-            Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Pill("Once a day", kind == 0) { kind = 0 }
-                Pill("Several times a day", kind == 1) { kind = 1 }
-                Pill("Daily limit", kind == 2) { kind = 2 }
+            Spacer(Modifier.height(12.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                ModeCard("✅", "Once a day", "Tick it off once. Like a workout, reading or vitamins.", kind == 0) { kind = 0 }
+                ModeCard("🔢", "Several times a day, with a target", "Aim for a number. Like 8 walks or 3000 ml of water.", kind == 1 && !open) { kind = 1; open = false }
+                ModeCard("♾️", "As many as I can, no target", "Log every time and beat your best day. Like walks or push-ups.", kind == 1 && open) { kind = 1; open = true }
+                ModeCard("🚧", "Daily limit", "Stay under a number. Like 1300 kcal or 2 coffees.", kind == 2) { kind = 2 }
             }
-            Sub(when (kind) {
-                0 -> "Do it once and tick it off, like a workout, reading or a walk. Reminders repeat until you've done it."
-                1 -> "Count how many times (a walk every hour) or how much (3000 ml of water). Reminders stop when you hit the target."
-                else -> "Stay at or under a number, like 1300 kcal. A day counts once you've logged something."
-            }, Modifier.padding(top = 10.dp))
         }
         if (kind != 0) Surf {
-            Title(if (kind == 1) "Daily target" else "Daily limit")
+            Title(if (kind == 1) "What are you counting?" else "Daily limit")
             Spacer(Modifier.height(8.dp))
             OutlinedTextField(value = unit, onValueChange = { unit = it.take(12) }, singleLine = true,
                 label = { Text("Unit (times, ml, kcal, walks…)") }, modifier = Modifier.fillMaxWidth())
             val sfx = if (unit.isBlank()) "" else " ${unit.trim()}"
-            Stepper("Target", target, 1, 1000000, sfx, step) { target = it }
+            if (kind == 1 && open) Sub("No target. Your best day becomes the record to beat. Reminders keep coming but skip if you logged recently.", Modifier.padding(top = 10.dp))
+            if (!(kind == 1 && open)) Stepper("Target", target, 1, 1000000, sfx, step) { target = it }
             Stepper("Quick-add amount", step, 1, 100000, sfx, if (step >= 100) 50 else 1) { step = it }
         }
         Surf {
@@ -338,13 +349,13 @@ fun HabitEditor(id: String?, onClose: () -> Unit) {
             else {
                 val m = rules[0]
                 Store.saveHabit(c, Habit(ex?.id ?: System.currentTimeMillis().toString(), name.ifBlank { "Habit" }, emoji.ifBlank { "✅" },
-                    kind, if (kind == 0) 1 else target, unit.trim(), if (kind == 0) 1 else step, days, remOn, m.from, m.to, m.every,
+                    kind, if (kind == 0) 1 else if (kind == 1 && open) 0 else target, unit.trim(), if (kind == 0) 1 else step, days, remOn, m.from, m.to, m.every,
                     ex?.created ?: System.currentTimeMillis(), ex?.streak ?: 0, ex?.best ?: 0, ex?.ev ?: (Store.today() - 1),
                     if (adv) m.days else -1, if (adv) rules.drop(1) else emptyList()))
                 ReminderReceiver.schedule(c)
                 onClose()
             }
         }
-        if (ex != null) Btn("Delete habit", filled = false) { Store.deleteHabit(c, ex.id); ReminderReceiver.schedule(c); onClose() }
+        if (ex != null) ConfirmBtn("Delete habit") { Store.deleteHabit(c, ex.id); ReminderReceiver.schedule(c); onClose() }
     }
 }

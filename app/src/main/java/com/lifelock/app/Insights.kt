@@ -67,6 +67,35 @@ fun fmtDur(ms: Long): String { val m = ms / 60000; return if (m >= 60) "${m / 60
 fun fmtHrs(ms: Long): String = String.format(java.util.Locale.US, "%.1fh", ms / 3600000.0)
 
 object UsageCalc {
+    /** Foreground milliseconds per app between [from] and [to], read from Android's own usage records. */
+    fun ms(c: Context, pkgs: Set<String>, from: Long, to: Long): Map<String, Long> {
+        val out = HashMap<String, Long>()
+        if (pkgs.isEmpty() || to <= from) return out
+        val ev = try { c.getSystemService(UsageStatsManager::class.java).queryEvents(from - 3600000L, to) } catch (e: Exception) { return out }
+        val e = UsageEvents.Event()
+        var cur = ""
+        var curStart = 0L
+        fun add(p: String, a: Long, b: Long) {
+            if (p !in pkgs) return
+            val s = maxOf(a, from)
+            val en = minOf(b, to)
+            if (en > s) out[p] = (out[p] ?: 0L) + (en - s)
+        }
+        while (ev.hasNextEvent()) {
+            ev.getNextEvent(e)
+            val pk = e.packageName ?: ""
+            when (e.eventType) {
+                UsageEvents.Event.ACTIVITY_RESUMED -> if (pk != cur) {
+                    if (cur.isNotEmpty()) add(cur, curStart, e.timeStamp)
+                    cur = pk; curStart = e.timeStamp
+                }
+                UsageEvents.Event.SCREEN_NON_INTERACTIVE -> { if (cur.isNotEmpty()) add(cur, curStart, e.timeStamp); cur = "" }
+            }
+        }
+        if (cur.isNotEmpty()) add(cur, curStart, to)
+        return out
+    }
+
     /** Reads the last 7 days of foreground time per app plus unlock counts. Run off the main thread. */
     fun load(c: Context): Insights {
         val zone = ZoneId.systemDefault()

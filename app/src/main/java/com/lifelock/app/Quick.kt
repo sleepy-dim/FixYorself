@@ -108,7 +108,7 @@ class QuickLogTile : TileService() {
             val v = Store.hLog(this, h.id)
             t.label = "${h.emoji} +${h.step}"
             t.state = if (Store.met(h, v)) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
-            if (Build.VERSION.SDK_INT >= 29) t.subtitle = "$v/${h.target} ${h.unit}".trim()
+            if (Build.VERSION.SDK_INT >= 29) t.subtitle = (if (h.target == 0) "$v ${h.unit} today" else "$v/${h.target} ${h.unit}").trim()
         }
         t.updateTile()
     }
