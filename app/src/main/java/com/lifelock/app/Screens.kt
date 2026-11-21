@@ -153,6 +153,17 @@ fun TodayScreen(ver: Int, now: Long, go: (Page) -> Unit, bump: () -> Unit) {
                         Text(label, color = if (done) Pal.muted else Pal.ink, fontWeight = FontWeight.SemiBold)
                     }
                 }
+                if (Store.habits(c).isEmpty()) Btn("Add 3 starter habits for me", Modifier.padding(top = 10.dp), filled = false) {
+                    val t0 = System.currentTimeMillis()
+                    val y = Store.today() - 1
+                    listOf(
+                        Habit(t0.toString(), "Drink water", "💧", 1, 3000, "ml", 250, 127, true, 480, 1320, 90, t0, 0, 0, y),
+                        Habit((t0 + 1).toString(), "Walks", "🚶", 1, 0, "walks", 1, 127, true, 540, 1140, 60, t0, 0, 0, y),
+                        Habit((t0 + 2).toString(), "Read 20 minutes", "📖", 0, 1, "", 1, 127, true, 1260, 1320, 1440, t0, 0, 0, y)
+                    ).forEach { Store.saveHabit(c, it) }
+                    ReminderReceiver.schedule(c)
+                    bump()
+                }
             }
         }
         item {
@@ -217,7 +228,7 @@ fun TodayScreen(ver: Int, now: Long, go: (Page) -> Unit, bump: () -> Unit) {
         }
         item { SectionLabel("Goals") }
         if (goals.isEmpty()) item {
-            EmptyState("🎯", "No goals yet", "Try “No food delivery until next month” and block the apps that tempt you.")
+            EmptyState("🎯", "No goals yet", "Try “No food delivery until next month” and block the apps that tempt you.", "Set a goal") { go(Page.NewGoal) }
         }
         items(goals, key = { it.id }) { g -> GoalCard(g, t, bump) }
     }
@@ -320,7 +331,7 @@ fun LimitsScreen(ver: Int, now: Long, sub: Int, onSub: (Int) -> Unit, go: (Page)
             }
         }
         if (sub == 0) {
-            if (limits.isEmpty()) item { EmptyState("⏳", "No limits yet", "Give Instagram, YouTube or any app a daily budget. Not sure which? Check Insights.") }
+            if (limits.isEmpty()) item { EmptyState("⏳", "No limits yet", "Give Instagram, YouTube or any app a daily budget. Not sure which? Check Insights.", "Add a limit") { go(Page.NewLimit) } }
             items(limits, key = { it.pkg }) { l -> LimitCard(l, now, go, bump) }
         } else insightsItems(c, data, range, { range = it }, bump)
     }
@@ -369,7 +380,7 @@ fun SchedulesScreen(ver: Int, now: Long, go: (Page) -> Unit, bump: () -> Unit) {
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 120.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item { ScreenTitle("Schedules", "Weekly routines. Allow only certain apps, or block some, with optional daily caps.") }
         if (list.isEmpty()) item {
-            EmptyState("🗓️", "No schedules yet", "Example: Mon–Fri 9–5, only Docs and WhatsApp, YouTube capped at 20 min.")
+            EmptyState("🗓️", "No schedules yet", "Example: Mon–Fri 9–5, only Docs and WhatsApp, YouTube capped at 20 min.", "Create a schedule") { go(Page.SchedEdit(null)) }
         }
         items(list, key = { it.id }) { s ->
             val active = Store.schedActive(s)
@@ -420,6 +431,7 @@ fun SettingsScreen(ver: Int, now: Long, go: (Page) -> Unit, bump: () -> Unit) {
     val rem = Store.rem(c)
     val quiets = Store.quiets(c)
     val appVer = try { c.packageManager.getPackageInfo(c.packageName, 0).versionName } catch (e: Exception) { "?" }
+    var showAdv by remember { mutableStateOf(false) }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 40.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item { ScreenTitle("Settings", "LifeLock version $appVer") }
         item {
@@ -444,6 +456,29 @@ fun SettingsScreen(ver: Int, now: Long, go: (Page) -> Unit, bump: () -> Unit) {
                     }
                 }
                 Sub("Default is the deep-navy look. Dark is black with a purple glow. AMOLED is pure #000000 with no glow, so pixels are fully off on your S24's screen.", Modifier.padding(top = 10.dp))
+            }
+        }
+        item { SectionLabel("How reminders alert you") }
+        item {
+            val st = Store.style(c)
+            val fsOk = Build.VERSION.SDK_INT < 34 || c.getSystemService(android.app.NotificationManager::class.java).canUseFullScreenIntent()
+            Surf {
+                Title("Reminder style")
+                Spacer(Modifier.height(12.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    ModeCard("🔔", "Gentle", "A normal notification that pops up while you're using the phone.", st == 0) { Store.setStyle(c, 0); ReminderReceiver.schedule(c); bump() }
+                    ModeCard("📣", "Loud", "Alarm-style sound and strong vibration, plus a pop-up. Hard to miss.", st == 1) { Store.setStyle(c, 1); ReminderReceiver.schedule(c); bump() }
+                    ModeCard("📱", "Wake the screen", "Loud, and turns the screen on with a big pop-up you can answer from the lock screen.", st == 2) { Store.setStyle(c, 2); ReminderReceiver.schedule(c); bump() }
+                }
+                if (st == 2 && !fsOk) {
+                    Sub("Android needs your permission to show pop-ups over the lock screen.", Modifier.padding(top = 12.dp), Pal.orange)
+                    Btn("Allow full-screen pop-ups", Modifier.padding(top = 8.dp), filled = false) {
+                        Perm.open(c, Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT, Uri.parse("package:${c.packageName}")))
+                    }
+                }
+                Btn("Send a test reminder", Modifier.padding(top = 14.dp), filled = false) { Reminders.send(c, true) }
+                Sub("Not seeing pop-ups on Samsung? Settings → Notifications → App notifications → LifeLock: turn on Pop-up and Sound for the reminder categories, and check Do Not Disturb.",
+                    Modifier.padding(top = 10.dp))
             }
         }
         item { SectionLabel("Passes") }
@@ -517,6 +552,7 @@ fun SettingsScreen(ver: Int, now: Long, go: (Page) -> Unit, bump: () -> Unit) {
                 }
             }
         }
+        if (showAdv) {
         item { SectionLabel("Diagnostics") }
         item {
             val day = Store.today()
@@ -546,6 +582,7 @@ fun SettingsScreen(ver: Int, now: Long, go: (Page) -> Unit, bump: () -> Unit) {
                 }
             }
         }
+        }
         item { SectionLabel("Battery") }
         item {
             Surf {
@@ -554,7 +591,7 @@ fun SettingsScreen(ver: Int, now: Long, go: (Page) -> Unit, bump: () -> Unit) {
                     Spacer(Modifier.width(14.dp))
                     Column(Modifier.weight(1f)) {
                         Title("Battery-saver reminders")
-                        Sub("Reminders appear when you next pick up your phone instead of waking it. Lowest possible drain, but not instant while the phone is idle.")
+                        Sub("Reminders appear when you next pick up your phone instead of waking it. Lowest possible drain, but not instant while the phone is idle. Only applies to the Gentle style; Loud reminders always arrive on time.")
                     }
                     Switch(checked = Store.lowPower(c), onCheckedChange = { Store.setLowPower(c, it); ReminderReceiver.schedule(c); bump() })
                 }
@@ -601,7 +638,8 @@ fun SettingsScreen(ver: Int, now: Long, go: (Page) -> Unit, bump: () -> Unit) {
                 }
             }
         }
-        item { SectionLabel("Compatibility mode") }
+        if (showAdv) {
+        item { SectionLabel("Works with banking apps") }
         item {
             val pa = Store.pauseApps(c).toList()
             var picker by remember { mutableStateOf(false) }
@@ -652,6 +690,7 @@ fun SettingsScreen(ver: Int, now: Long, go: (Page) -> Unit, bump: () -> Unit) {
                 Store.setPauseApps(c, ok); Compat.sync(c); picker = false; bump()
             }, { picker = false })
         }
+        }
         item { SectionLabel("Motivation") }
         item {
             var why by remember { mutableStateOf(Store.why(c)) }
@@ -662,6 +701,10 @@ fun SettingsScreen(ver: Int, now: Long, go: (Page) -> Unit, bump: () -> Unit) {
                 OutlinedTextField(value = why, onValueChange = { why = it; Store.setWhy(c, it) },
                     placeholder = { Text("Why are you doing this?") }, shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth())
             }
+        }
+        item {
+            Btn(if (showAdv) "Hide advanced settings" else "Show advanced settings (diagnostics, banking-app mode)",
+                Modifier.padding(top = 8.dp), filled = false) { showAdv = !showAdv }
         }
     }
 }

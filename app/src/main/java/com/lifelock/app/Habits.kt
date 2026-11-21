@@ -107,10 +107,10 @@ fun HabitsScreen(ver: Int, now: Long, sub: Int, onSub: (Int) -> Unit, go: (Page)
                     }
                 }
             }
-            if (hs.isEmpty()) item { EmptyState("🌱", "No habits yet", "Start from a template: Drink water, Walk break, Calories, Steps…") }
+            if (hs.isEmpty()) item { EmptyState("🌱", "No habits yet", "Start from a template: Drink water, Walk break, Calories, Steps…", "Add a habit") { go(Page.HabitEdit(null)) } }
             items(hs, key = { it.id }) { h -> HabitCard(h, t, ver, go, bump) }
         } else {
-            if (trs.isEmpty()) item { EmptyState("📈", "No targets yet", "Track weight, push-ups, running distance or savings. The app picks the +/− jumps for you.") }
+            if (trs.isEmpty()) item { EmptyState("📈", "No targets yet", "Track weight, push-ups, running distance or savings. The app picks the +/− jumps for you.", "Add a target") { go(Page.TargetEdit(null)) } }
             items(trs, key = { it.id }) { tr -> TargetCard(tr, ver, go, bump) }
         }
     }

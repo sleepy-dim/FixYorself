@@ -92,6 +92,7 @@ class GuardService : AccessibilityService() {
         if (p != packageName && !isUserApp(p)) return   // system overlays never count as "the current app"
         events++
         Store.bump(this, "events")
+        if (!Store.hasRules(this)) { fg = p; return }
         if (p != fg) {
             accrue(); Store.flushUsage(this); fg = p
             if (sysUsage()) syncFg(p, false)

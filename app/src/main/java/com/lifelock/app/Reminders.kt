@@ -8,6 +8,9 @@ import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.media.AudioAttributes
+import android.media.RingtoneManager
+import android.os.Build
 import java.time.Instant
 import java.time.LocalDateTime
 import java.time.ZoneId
@@ -74,7 +77,7 @@ object Reminders {
         val pi = PendingIntent.getBroadcast(c, 1, Intent(c, ReminderReceiver::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         if (min == Long.MAX_VALUE) am.cancel(pi)
-        else if (Store.lowPower(c)) am.set(AlarmManager.RTC, min, pi)          // battery saver: never wakes the phone
+        else if (Store.deferAlarms(c)) am.set(AlarmManager.RTC, min, pi)          // battery saver: never wakes the phone
         else am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, min, pi)
     }
 
@@ -84,7 +87,7 @@ object Reminders {
         val pi = PendingIntent.getBroadcast(c, 2, Intent(c, DailyReceiver::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val am = c.getSystemService(AlarmManager::class.java)
-        if (Store.lowPower(c)) am.set(AlarmManager.RTC, t, pi) else am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, t, pi)
+        if (Store.deferAlarms(c)) am.set(AlarmManager.RTC, t, pi) else am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, t, pi)
     }
 
     /** Called when a reminder is due. Re-checks the rules at delivery time, so late alarms never ping you at a bad time. */
@@ -113,18 +116,68 @@ object Reminders {
         else if (!Store.met(h, v)) notifyHabit(c, h, v)
     }
 
-    private fun channel(c: Context, id: String, name: String, imp: Int = NotificationManager.IMPORTANCE_HIGH): NotificationManager {
+    /** One channel per style, because a channel's sound can't be changed after it exists. */
+    private fun chan(c: Context, base: String, label: String): String {
+        val st = Store.style(c)
+        val id = "${base}_s$st"
         val nm = c.getSystemService(NotificationManager::class.java)
-        nm.createNotificationChannel(NotificationChannel(id, name, imp))
-        return nm
+        if (nm.getNotificationChannel(id) == null) {
+            for (old in listOf("remind", "habits", "targets")) nm.deleteNotificationChannel(old)
+            val ch = NotificationChannel(id, label + (if (st == 0) " (gentle)" else if (st == 1) " (loud)" else " (wakes screen)"),
+                NotificationManager.IMPORTANCE_HIGH)
+            if (st >= 1) {
+                val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM) ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+                ch.setSound(uri, AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ALARM)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build())
+                ch.enableVibration(true)
+                ch.vibrationPattern = longArrayOf(0, 600, 250, 600, 250, 900)
+            }
+            ch.lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+            nm.createNotificationChannel(ch)
+        }
+        return id
     }
 
+    /** Adds the "this is a reminder" hints, the optional screen-waking pop-up and a time-out, then builds. */
+    private fun decorate(c: Context, b: Notification.Builder, popup: Intent?, code: Int): Notification {
+        b.setCategory(Notification.CATEGORY_REMINDER).setVisibility(Notification.VISIBILITY_PUBLIC)
+        val st = Store.style(c)
+        if (st == 2 && popup != null) {
+            val nm = c.getSystemService(NotificationManager::class.java)
+            if (Build.VERSION.SDK_INT < 34 || nm.canUseFullScreenIntent())
+                b.setFullScreenIntent(PendingIntent.getActivity(c, code, popup, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT), true)
+        }
+        if (st >= 1) b.setTimeoutAfter(5 * 60 * 1000L)
+        return b.build()
+    }
+
+    private fun popupIntent(c: Context, type: String, id: String, title: String, text: String, label: String, amount: Int = 1) =
+        Intent(c, ReminderPopup::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            .putExtra("type", type).putExtra("id", id).putExtra("title", title).putExtra("text", text)
+            .putExtra("label", label).putExtra("amount", amount)
+
+    private fun snoozeAction(c: Context, type: String, id: String) = PendingIntent.getBroadcast(c, ("s$type$id").hashCode(),
+        Intent(c, SnoozeReceiver::class.java).setAction("snooze").putExtra("type", type).putExtra("id", id),
+        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+
     fun notifId(id: String) = 100 + (id.hashCode() and 0xFFFF)
+    fun notifIdFor(type: String, id: String) = when (type) { "h" -> notifId(id); "t" -> 300 + (id.hashCode() and 0xFFFF); else -> 1 }
+
+    /** Re-shows a reminder after [minutes] (wakes the phone unless battery-saver reminders are on and the style is gentle). */
+    fun snooze(c: Context, type: String, id: String, minutes: Int) {
+        val pi = PendingIntent.getBroadcast(c, ("f$type$id").hashCode(),
+            Intent(c, SnoozeReceiver::class.java).setAction("fire").putExtra("type", type).putExtra("id", id),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val at = System.currentTimeMillis() + minutes * 60000L
+        val am = c.getSystemService(AlarmManager::class.java)
+        if (Store.deferAlarms(c)) am.set(AlarmManager.RTC, at, pi) else am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+    }
 
     fun notifyHabit(c: Context, h: Habit, v: Int) {
         Store.bump(c, "notifs")
         logN(c, h.name)
-        val nm = channel(c, "habits", "Habit reminders")
+        val nm = c.getSystemService(NotificationManager::class.java)
+        val cid = chan(c, "habits", "Habit reminders")
         val open = PendingIntent.getActivity(c, 0, Intent(c, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
         val txt = when (h.kind) {
             0 -> "Time to do it."
@@ -136,20 +189,25 @@ object Reminders {
             Intent(c, HabitActionReceiver::class.java).putExtra("id", h.id).putExtra("d", amount),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val label = if (h.kind == 0) "Done ✓" else "+${h.step} ${h.unit}".trim()
-        nm.notify(notifId(h.id), Notification.Builder(c, "habits").setSmallIcon(R.drawable.ic_stat)
+        val b = Notification.Builder(c, cid).setSmallIcon(R.drawable.ic_stat)
             .setContentTitle("${h.emoji} ${h.name}").setContentText(txt).setContentIntent(open).setAutoCancel(true)
-            .addAction(android.R.drawable.ic_input_add, label, act).build())
+            .addAction(android.R.drawable.ic_input_add, label, act)
+            .addAction(android.R.drawable.ic_lock_idle_alarm, "Snooze 10 min", snoozeAction(c, "h", h.id))
+        nm.notify(notifId(h.id), decorate(c, b, popupIntent(c, "h", h.id, "${h.emoji} ${h.name}", txt, label, amount), h.id.hashCode()))
     }
 
     fun notifyTrack(c: Context, tr: Track) {
         Store.bump(c, "notifs")
         logN(c, tr.name)
-        val nm = channel(c, "targets", "Target reminders", NotificationManager.IMPORTANCE_DEFAULT)
+        val nm = c.getSystemService(NotificationManager::class.java)
+        val cid = chan(c, "targets", "Target reminders")
         val open = PendingIntent.getActivity(c, 20, Intent(c, MainActivity::class.java).putExtra("go", "targets"),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val txt = "Log today's value · now ${fmtNum(tr.cur)} ${tr.unit}, goal ${fmtNum(tr.target)}".replace("  ", " ")
-        nm.notify(300 + (tr.id.hashCode() and 0xFFFF), Notification.Builder(c, "targets").setSmallIcon(R.drawable.ic_stat)
-            .setContentTitle("${tr.emoji} ${tr.name}").setContentText(txt).setContentIntent(open).setAutoCancel(true).build())
+        val b = Notification.Builder(c, cid).setSmallIcon(R.drawable.ic_stat)
+            .setContentTitle("${tr.emoji} ${tr.name}").setContentText(txt).setContentIntent(open).setAutoCancel(true)
+            .addAction(android.R.drawable.ic_lock_idle_alarm, "Snooze 10 min", snoozeAction(c, "t", tr.id))
+        nm.notify(notifIdFor("t", tr.id), decorate(c, b, popupIntent(c, "t", tr.id, "${tr.emoji} ${tr.name}", txt, "Log it"), 300 + tr.id.hashCode()))
     }
 
     fun send(c: Context, test: Boolean = false) {
@@ -160,12 +218,14 @@ object Reminders {
         Store.bump(c, "notifs")
         logN(c, if (test) "test notification" else "goal check-in")
         val best = all.maxOfOrNull { Store.liveStreak(it) } ?: 0
-        val nm = channel(c, "remind", "Check-in reminders")
+        val nm = c.getSystemService(NotificationManager::class.java)
+        val cid = chan(c, "remind", "Check-in reminders")
         val open = PendingIntent.getActivity(c, 0, Intent(c, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
         val title = if (pend.isEmpty()) "Reminders are working ✅" else "Check in to keep your streak 🔥"
         val text = if (pend.isEmpty()) "You're all checked in." else pend.joinToString { it.title } + (if (best > 0) " · $best-day streak at stake" else "")
-        nm.notify(1, Notification.Builder(c, "remind").setSmallIcon(R.drawable.ic_stat)
-            .setContentTitle(title).setContentText(text).setContentIntent(open).setAutoCancel(true).build())
+        val b = Notification.Builder(c, cid).setSmallIcon(R.drawable.ic_stat)
+            .setContentTitle(title).setContentText(text).setContentIntent(open).setAutoCancel(true)
+        nm.notify(1, decorate(c, b, popupIntent(c, "g", pend.firstOrNull()?.id ?: "", title, text, if (pend.isEmpty()) "OK" else "Check in"), 1))
     }
 }
 
@@ -200,6 +260,30 @@ class HabitActionReceiver : BroadcastReceiver() {
         Store.hAdd(c, id, intent.getIntExtra("d", 1))
         c.getSystemService(NotificationManager::class.java).cancel(Reminders.notifId(id))
         LifeWidget.refresh(c)
+    }
+}
+
+/** Handles "Snooze 10 min" (schedules it) and the snoozed alarm itself (shows the reminder again if it is still needed). */
+class SnoozeReceiver : BroadcastReceiver() {
+    override fun onReceive(c: Context, i: Intent?) {
+        val intent = i ?: return
+        val type = intent.getStringExtra("type") ?: return
+        val id = intent.getStringExtra("id") ?: return
+        if (intent.action == "snooze") {
+            c.getSystemService(NotificationManager::class.java).cancel(Reminders.notifIdFor(type, id))
+            Reminders.snooze(c, type, id, 10)
+            return
+        }
+        val t = Store.today()
+        when (type) {
+            "h" -> Store.habits(c).firstOrNull { it.id == id }?.let { h ->
+                val v = Store.hLog(c, h.id, t)
+                val open = h.kind == 1 && h.target == 0
+                if (Store.hActive(h, t) && (open || (h.kind == 2 && v == 0) || (h.kind != 2 && !Store.met(h, v)))) Reminders.notifyHabit(c, h, v)
+            }
+            "t" -> Store.tracks(c).firstOrNull { it.id == id }?.let { Reminders.notifyTrack(c, it) }
+            else -> Reminders.send(c)
+        }
     }
 }
 

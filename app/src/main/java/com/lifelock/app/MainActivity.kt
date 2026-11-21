@@ -151,7 +151,7 @@ fun Root(startKey: Int, visible: Boolean, launch: String?, consumed: () -> Unit)
         now = System.currentTimeMillis()
         var day = Store.today()
         while (true) {
-            delay(if (Store.focusUntil(c) > System.currentTimeMillis()) 1000L else 10000L)
+            delay(if (Store.focusUntil(c) > System.currentTimeMillis()) 1000L else 30000L)
             now = System.currentTimeMillis()
             if (Store.today() != day) { day = Store.today(); Store.rollover(c); ver++ }
         }

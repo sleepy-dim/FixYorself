@@ -304,13 +304,14 @@ fun RoundAction(t: String, onClick: () -> Unit) {
 }
 
 @Composable
-fun EmptyState(emoji: String, title: String, body: String) {
+fun EmptyState(emoji: String, title: String, body: String, action: String? = null, onAction: () -> Unit = {}) {
     Column(Modifier.fillMaxWidth().padding(vertical = 28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Text(emoji, fontSize = 46.sp)
         Spacer(Modifier.height(10.dp))
         Title(title)
         Spacer(Modifier.height(4.dp))
         Text(body, color = Pal.muted, fontSize = 13.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 28.dp))
+        if (action != null) { Spacer(Modifier.height(16.dp)); Btn(action, Modifier.width(230.dp)) { onAction() } }
     }
 }
 
@@ -328,37 +329,60 @@ fun EditorPage(title: String, onBack: () -> Unit, content: @Composable ColumnSco
 }
 
 // ---------------------------------------------------------------- installed apps (icons + names)
-class AppInfo(val label: String, val pkg: String, val icon: ImageBitmap)
+class AppInfo(val label: String, val pkg: String)
 
+/**
+ * The installed-apps list holds only names (tiny). Icons are decoded one at a time when a row is actually on screen
+ * and kept in a small least-recently-used cache, so memory stays low and opening the app does no icon work.
+ */
 object AppRepo {
     private var list: List<AppInfo>? = null
-    private val map = ConcurrentHashMap<String, AppInfo>()
-    fun get(p: String): AppInfo? = map[p]
-    fun label(p: String): String = map[p]?.label ?: p
-    fun clear() { list = null; map.clear() }
+    private var loadedAt = 0L
+    private val labels = ConcurrentHashMap<String, String>()
+    private val icons = android.util.LruCache<String, ImageBitmap>(40)
+
+    fun label(p: String): String = labels[p] ?: p
+    fun cachedIcon(p: String): ImageBitmap? = icons.get(p)
+
+    fun icon(c: Context, p: String): ImageBitmap? {
+        icons.get(p)?.let { return it }
+        return try {
+            val b = c.packageManager.getApplicationIcon(p).toBitmap(112, 112).asImageBitmap()
+            icons.put(p, b)
+            b
+        } catch (e: Exception) { null }
+    }
 
     suspend fun load(c: Context): List<AppInfo> = withContext(Dispatchers.Default) {
         val cached = list
-        if (cached != null) cached else {
+        if (cached != null && System.currentTimeMillis() - loadedAt < 60000L) cached else {
             val pm = c.packageManager
             val i = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
             val r = pm.queryIntentActivities(i, 0)
                 .filter { it.activityInfo.packageName != c.packageName }
                 .distinctBy { it.activityInfo.packageName }
-                .map { AppInfo(it.loadLabel(pm).toString(), it.activityInfo.packageName, it.loadIcon(pm).toBitmap(120, 120).asImageBitmap()) }
+                .map { AppInfo(it.loadLabel(pm).toString(), it.activityInfo.packageName) }
                 .sortedBy { it.label.lowercase() }
-            r.forEach { map[it.pkg] = it }
+            r.forEach { labels[it.pkg] = it.label }
             list = r
+            loadedAt = System.currentTimeMillis()
             r
         }
     }
+
+    /** Frees the decoded icons (the name list is kept: it is tiny and saves work next time). */
+    fun clear() { icons.evictAll() }
 }
 
 @Composable
 fun AppIcon(pkg: String, size: Dp = 40.dp) {
-    val info = AppRepo.get(pkg)
-    if (info != null) {
-        Image(bitmap = info.icon, contentDescription = null, modifier = Modifier.size(size).clip(RoundedCornerShape(size / 4)))
+    val c = LocalContext.current
+    val bmp by produceState<ImageBitmap?>(AppRepo.cachedIcon(pkg), pkg) {
+        if (value == null) value = withContext(Dispatchers.IO) { AppRepo.icon(c, pkg) }
+    }
+    val b = bmp
+    if (b != null) {
+        Image(bitmap = b, contentDescription = null, modifier = Modifier.size(size).clip(RoundedCornerShape(size / 4)))
     } else {
         Box(Modifier.size(size).clip(RoundedCornerShape(size / 4)).background(Pal.card2), contentAlignment = Alignment.Center) {
             Text(pkg.substringAfterLast('.').take(1).uppercase(), color = Pal.ink, fontWeight = FontWeight.Bold)

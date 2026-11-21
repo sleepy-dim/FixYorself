@@ -358,6 +358,12 @@ object Store {
 
     // ---- focus ----
     fun focusUntil(c: Context) = sp(c).getLong("fu", 0L)
+    /** False for a brand-new user: nothing to block, so the blocker can ignore every app switch. */
+    fun hasRules(c: Context): Boolean {
+        val t = today()
+        return goals(c).any { t < it.end } || limits(c).isNotEmpty() || scheds(c).isNotEmpty() ||
+            focusUntil(c) > System.currentTimeMillis() || pauseApps(c).isNotEmpty()
+    }
     fun startFocus(c: Context, min: Int) = sp(c).edit().putLong("fu", System.currentTimeMillis() + min * 60000L).apply()
     fun focusApps(c: Context): Set<String> = cached("fa", sp(c).getString("fa", null) ?: "d") { parseFocus(c) }
     private fun parseFocus(c: Context): Set<String> =
@@ -483,6 +489,11 @@ object Store {
     }
     fun notifLog(c: Context): List<String> = (sp(c).getString("nlog", "") ?: "").split('\n').filter { it.isNotBlank() }
     fun lowPower(c: Context) = sp(c).getBoolean("lowpower", false)
+    /** How reminders alert you: 0 gentle, 1 loud (alarm sound + vibration + pop-up), 2 loud and wakes the screen. */
+    fun style(c: Context) = sp(c).getInt("rstyle", 1)
+    fun setStyle(c: Context, v: Int) = sp(c).edit().putInt("rstyle", v).apply()
+    /** Non-waking delivery only makes sense for gentle reminders; loud ones must arrive on time. */
+    fun deferAlarms(c: Context) = lowPower(c) && style(c) == 0
     fun setLowPower(c: Context, v: Boolean) = sp(c).edit().putBoolean("lowpower", v).apply()
     fun quickHabit(c: Context) = sp(c).getString("qh", "") ?: ""
     fun setQuickHabit(c: Context, id: String) = sp(c).edit().putString("qh", id).apply()
