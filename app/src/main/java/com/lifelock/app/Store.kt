@@ -10,7 +10,8 @@ import java.time.ZoneId
 import java.time.temporal.TemporalAdjusters
 
 data class Goal(val id: String, val title: String, val end: Long, val apps: List<String>,
-                val last: Long, val streak: Int, val best: Int, val created: Long)
+                val last: Long, val streak: Int, val best: Int, val created: Long,
+                val remOn: Boolean = true, val remStyle: Int = -1)
 data class LimitRule(val days: Int, val min: Int, val from: Int = 0, val to: Int = 0)   // min 0 = blocked; from == to means all day
 data class Limit(val pkg: String, val min: Int, val streak: Int, val ev: Long, val cd: Long, val rules: List<LimitRule> = emptyList())
 data class Entry(val pkg: String, val cap: Int)
@@ -22,10 +23,10 @@ data class RemRule(val days: Int, val from: Int, val to: Int, val every: Int)   
 data class Habit(val id: String, val name: String, val emoji: String, val kind: Int, val target: Int, val unit: String,
                  val step: Int, val days: Int, val remOn: Boolean, val remFrom: Int, val remTo: Int, val remEvery: Int,
                  val created: Long, val streak: Int, val best: Int, val ev: Long,
-                 val remDays: Int = -1, val extra: List<RemRule> = emptyList())   // remDays -1 = same days as the habit; kind: 0 = yes/no, 1 = at least, 2 = at most
+                 val remDays: Int = -1, val extra: List<RemRule> = emptyList(), val remStyle: Int = -1)   // remStyle -1 = use the default style; remDays -1 = same days as the habit; kind: 0 = yes/no, 1 = at least, 2 = at most
 data class Track(val id: String, val name: String, val emoji: String, val unit: String, val start: Double,
                  val target: Double, val end: Long, val created: Long, val hist: List<Pair<Long, Double>>,
-                 val remOn: Boolean = false, val remFrom: Int = 480, val remTo: Int = 480, val remEvery: Int = 1440, val remDays: Int = 127) {
+                 val remOn: Boolean = false, val remFrom: Int = 480, val remTo: Int = 480, val remEvery: Int = 1440, val remDays: Int = 127, val remStyle: Int = -1) {
     val cur: Double get() = hist.lastOrNull()?.second ?: start
     val up: Boolean get() = target >= start
 }
@@ -80,19 +81,21 @@ object Store {
     fun goals(c: Context): List<Goal> = cached("goals", sp(c).getString("goals", "[]") ?: "[]") { parseGoals(c) }
     private fun parseGoals(c: Context): List<Goal> = JSONArray(sp(c).getString("goals", "[]")).objs().map {
         Goal(it.getString("id"), it.getString("t"), it.getLong("e"), it.getJSONArray("a").strs(),
-            it.getLong("l"), it.getInt("s"), it.getInt("b"), it.getLong("c"))
+            it.getLong("l"), it.getInt("s"), it.getInt("b"), it.getLong("c"),
+            it.optBoolean("ro", true), it.optInt("rs", -1))
     }
     fun saveGoals(c: Context, l: List<Goal>) {
         val a = JSONArray()
         l.forEach {
             a.put(JSONObject().put("id", it.id).put("t", it.title).put("e", it.end).put("a", JSONArray(it.apps))
-                .put("l", it.last).put("s", it.streak).put("b", it.best).put("c", it.created))
+                .put("l", it.last).put("s", it.streak).put("b", it.best).put("c", it.created)
+                .put("ro", it.remOn).put("rs", it.remStyle))
         }
         sp(c).edit().putString("goals", a.toString()).apply()
     }
-    fun addGoal(c: Context, title: String, end: Long, apps: List<String>) {
+    fun addGoal(c: Context, title: String, end: Long, apps: List<String>, remOn: Boolean = true, remStyle: Int = -1) {
         val now = System.currentTimeMillis()
-        saveGoals(c, goals(c) + Goal(now.toString(), title, end, apps, 0L, 0, 0, now))
+        saveGoals(c, goals(c) + Goal(now.toString(), title, end, apps, 0L, 0, 0, now, remOn, remStyle))
     }
     fun checkIn(c: Context, id: String) {
         val t = today()
@@ -169,29 +172,39 @@ object Store {
         val now = LocalDateTime.now()
         val nowMs = System.currentTimeMillis()
         val z = ZoneId.systemDefault()
+        // One Android query per distinct start time (all-day limits share midnight), not one per app.
+        val byStart = HashMap<Long, MutableList<Pair<String, String>>>()     // start -> (usage key, package)
         for (l in limits(c)) {
             if (only != null && l.pkg != only) continue
             val ar = activeRule(l, now) ?: continue
             val r = ar.first
             val start = LocalDate.ofEpochDay(ar.second).atStartOfDay(z).plusMinutes(if (r.from == r.to) 0L else r.from.toLong()).toInstant().toEpochMilli()
-            usageMem[ruleKey(l.pkg, r, ar.second)] = UsageCalc.ms(c, setOf(l.pkg), start, nowMs)[l.pkg] ?: 0L
+            byStart.getOrPut(start) { mutableListOf() }.add(ruleKey(l.pkg, r, ar.second) to l.pkg)
         }
         for (sc in scheds(c)) {
             val wd = windowDay(sc.days, sc.start, sc.end, now) ?: continue
-            val capped = sc.entries.filter { it.cap > 0 && (only == null || it.pkg == only) }.map { it.pkg }.toSet()
-            if (capped.isEmpty()) continue
             val start = LocalDate.ofEpochDay(wd).atStartOfDay(z).plusMinutes(sc.start.toLong()).toInstant().toEpochMilli()
-            val m = UsageCalc.ms(c, capped, start, nowMs)
-            capped.forEach { usageMem["s_${sc.id}_${it}_$wd"] = m[it] ?: 0L }
+            for (e in sc.entries) if (e.cap > 0 && (only == null || e.pkg == only))
+                byStart.getOrPut(start) { mutableListOf() }.add("s_${sc.id}_${e.pkg}_$wd" to e.pkg)
+        }
+        for ((start, list) in byStart) {
+            val m = UsageCalc.ms(c, list.map { it.second }.toSet(), start, nowMs)
+            list.forEach { (key, pkg) -> usageMem[key] = m[pkg] ?: 0L }
         }
     }
 
+    private val ruleCache = java.util.concurrent.ConcurrentHashMap<String, Map<String, Long>>()
+
+    /** One Android query per (day, hours) covers every limited app at once. */
     private fun usedForRule(c: Context, pkg: String, r: LimitRule, d: Long): Long {
         if (Compat.usageOk(c) && today() - d <= 6) {
-            val day = LocalDate.ofEpochDay(d).atStartOfDay(ZoneId.systemDefault())
-            val a = day.plusMinutes(if (r.from == r.to) 0L else r.from.toLong())
-            val b = if (r.from == r.to) day.plusDays(1) else if (r.to > r.from) day.plusMinutes(r.to.toLong()) else day.plusDays(1).plusMinutes(r.to.toLong())
-            return UsageCalc.ms(c, setOf(pkg), a.toInstant().toEpochMilli(), b.toInstant().toEpochMilli())[pkg] ?: 0L
+            val m = ruleCache.getOrPut("$d:${r.from}:${r.to}") {
+                val day = LocalDate.ofEpochDay(d).atStartOfDay(ZoneId.systemDefault())
+                val a = day.plusMinutes(if (r.from == r.to) 0L else r.from.toLong())
+                val b = if (r.from == r.to) day.plusDays(1) else if (r.to > r.from) day.plusMinutes(r.to.toLong()) else day.plusDays(1).plusMinutes(r.to.toLong())
+                UsageCalc.ms(c, limits(c).map { it.pkg }.toSet(), a.toInstant().toEpochMilli(), b.toInstant().toEpochMilli())
+            }
+            return m[pkg] ?: 0L
         }
         return used(c, ruleKey(pkg, r, d))
     }
@@ -258,7 +271,9 @@ object Store {
     fun bump(c: Context, name: String) { val k = "diag_${name}_${today()}"; usageMem[k] = used(c, k) + 1L; diagDirty.add(k) }
     fun diag(c: Context, name: String, day: Long) = used(c, "diag_${name}_$day")
 
+    @Synchronized
     fun rollover(c: Context) {
+        ruleCache.clear()
         val t = today()
         var ch = false
         val out = limits(c).map { x ->
@@ -285,7 +300,14 @@ object Store {
                 if (k.startsWith("u_") || k.startsWith("x_")) {
                     val d = k.substringAfterLast('_').toLongOrNull()
                     if (d != null && d < t - 14) ed.remove(k)
+                } else if (k.startsWith("hl_")) {
+                    val d = k.substringAfterLast('_').toLongOrNull()
+                    if (d != null && d < t - 120) ed.remove(k)
                 }
+            }
+            for (k in usageMem.keys.toList()) {
+                val d = k.substringAfterLast('_').toLongOrNull()
+                if (d != null && d < t - 14) usageMem.remove(k)
             }
             ed.putLong("clean", t).apply()
         }
@@ -376,14 +398,14 @@ object Store {
         Habit(it.getString("id"), it.getString("n"), it.getString("em"), it.getInt("k"), it.getInt("t"), it.getString("u"),
             it.getInt("st"), it.getInt("d"), it.getBoolean("ro"), it.getInt("rf"), it.getInt("rt"), it.getInt("re"),
             it.getLong("c"), it.getInt("s"), it.getInt("b"), it.getLong("e"),
-            it.optInt("rd", -1), parseRules(it.optJSONArray("x")))
+            it.optInt("rd", -1), parseRules(it.optJSONArray("x")), it.optInt("rs", -1))
     }
     private fun writeHabits(c: Context, l: List<Habit>) {
         val a = JSONArray()
         l.forEach {
             a.put(JSONObject().put("id", it.id).put("n", it.name).put("em", it.emoji).put("k", it.kind).put("t", it.target)
                 .put("u", it.unit).put("st", it.step).put("d", it.days).put("ro", it.remOn).put("rf", it.remFrom)
-                .put("rt", it.remTo).put("re", it.remEvery).put("c", it.created).put("s", it.streak).put("b", it.best).put("e", it.ev).put("rd", it.remDays).put("x", rulesJson(it.extra)))
+                .put("rt", it.remTo).put("re", it.remEvery).put("c", it.created).put("s", it.streak).put("b", it.best).put("e", it.ev).put("rd", it.remDays).put("x", rulesJson(it.extra)).put("rs", it.remStyle))
         }
         sp(c).edit().putString("habits", a.toString()).apply()
     }
@@ -439,7 +461,7 @@ object Store {
         val h = o.getJSONArray("h")
         Track(o.getString("id"), o.getString("n"), o.getString("em"), o.getString("u"), o.getDouble("s"), o.getDouble("t"),
             o.getLong("e"), o.getLong("c"), List(h.length()) { i -> val a = h.getJSONArray(i); a.getLong(0) to a.getDouble(1) },
-            o.optBoolean("ro", false), o.optInt("rf", 480), o.optInt("rt", 480), o.optInt("re", 1440), o.optInt("rd", 127))
+            o.optBoolean("ro", false), o.optInt("rf", 480), o.optInt("rt", 480), o.optInt("re", 1440), o.optInt("rd", 127), o.optInt("rs", -1))
     }
     private fun writeTracks(c: Context, l: List<Track>) {
         val a = JSONArray()
@@ -448,7 +470,7 @@ object Store {
             t.hist.forEach { h.put(JSONArray().put(it.first).put(it.second)) }
             a.put(JSONObject().put("id", t.id).put("n", t.name).put("em", t.emoji).put("u", t.unit).put("s", t.start)
                 .put("t", t.target).put("e", t.end).put("c", t.created).put("ro", t.remOn).put("rf", t.remFrom).put("rt", t.remTo)
-                .put("re", t.remEvery).put("rd", t.remDays).put("h", h))
+                .put("re", t.remEvery).put("rd", t.remDays).put("rs", t.remStyle).put("h", h))
         }
         sp(c).edit().putString("tracks", a.toString()).apply()
     }
@@ -493,7 +515,8 @@ object Store {
     fun style(c: Context) = sp(c).getInt("rstyle", 1)
     fun setStyle(c: Context, v: Int) = sp(c).edit().putInt("rstyle", v).apply()
     /** Non-waking delivery only makes sense for gentle reminders; loud ones must arrive on time. */
-    fun deferAlarms(c: Context) = lowPower(c) && style(c) == 0
+    fun deferAlarms(c: Context) = lowPower(c) && style(c) == 0 &&
+        habits(c).none { it.remStyle >= 1 } && tracks(c).none { it.remStyle >= 1 }
     fun setLowPower(c: Context, v: Boolean) = sp(c).edit().putBoolean("lowpower", v).apply()
     fun quickHabit(c: Context) = sp(c).getString("qh", "") ?: ""
     fun setQuickHabit(c: Context, id: String) = sp(c).edit().putString("qh", id).apply()

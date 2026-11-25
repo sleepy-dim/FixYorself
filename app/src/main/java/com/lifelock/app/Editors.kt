@@ -56,6 +56,8 @@ fun GoalEditor(onClose: () -> Unit) {
     var end by remember { mutableStateOf(LocalDate.now().plusMonths(1).withDayOfMonth(1)) }
     var apps by remember { mutableStateOf(setOf<String>()) }
     var picker by remember { mutableStateOf(false) }
+    var remind by remember { mutableStateOf(true) }
+    var galert by remember { mutableIntStateOf(-1) }
     EditorPage("New goal", onClose) {
         OutlinedTextField(value = title, onValueChange = { title = it }, singleLine = true,
             label = { Text("Goal, e.g. No food delivery") }, modifier = Modifier.fillMaxWidth())
@@ -77,8 +79,18 @@ fun GoalEditor(onClose: () -> Unit) {
             if (apps.isNotEmpty()) { Spacer(Modifier.height(10.dp)); AppsRow(apps.toList()) }
             Btn(if (apps.isEmpty()) "Choose apps" else "Change apps (${apps.size})", Modifier.padding(top = 12.dp), filled = false) { picker = true }
         }
+        Surf {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Title("Remind me to check in")
+                    Sub("A daily nudge until you've checked in. Times are set in Settings → Goal check-in reminders.")
+                }
+                Switch(checked = remind, onCheckedChange = { remind = it })
+            }
+            if (remind) { Spacer(Modifier.height(14.dp)); AlertPicker(galert) { galert = it } }
+        }
         Btn("Start goal") {
-            if (title.isBlank()) toast(c, "Give your goal a name") else { Store.addGoal(c, title.trim(), end.toEpochDay(), apps.toList()); onClose() }
+            if (title.isBlank()) toast(c, "Give your goal a name") else { Store.addGoal(c, title.trim(), end.toEpochDay(), apps.toList(), remind, galert); ReminderReceiver.schedule(c); onClose() }
         }
     }
     if (picker) AppPicker("Block until goal ends", true, apps, { apps = it; picker = false }, { picker = false })

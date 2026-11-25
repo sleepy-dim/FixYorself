@@ -210,6 +210,7 @@ fun TargetEditor(id: String?, onClose: () -> Unit) {
     var rTo by remember { mutableIntStateOf(if (ex != null && ex.remEvery < 1440) ex.remTo else 1200) }
     var rEvery by remember { mutableIntStateOf(if (ex != null && ex.remEvery < 1440) ex.remEvery else 180) }
     var rDays by remember { mutableIntStateOf(ex?.remDays ?: 127) }
+    var alert by remember { mutableIntStateOf(ex?.remStyle ?: -1) }
     val sv = startTxt.replace(',', '.').toDoubleOrNull()
     val tv = targetTxt.replace(',', '.').toDoubleOrNull()
     val numKb = KeyboardOptions(keyboardType = KeyboardType.Decimal)
@@ -265,10 +266,11 @@ fun TargetEditor(id: String?, onClose: () -> Unit) {
             Title("Reminders")
             Spacer(Modifier.height(10.dp))
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Pill("None", rMode == 0) { rMode = 0 }
+                Pill("No reminder", rMode == 0) { rMode = 0 }
                 Pill("Once a day", rMode == 1) { rMode = 1 }
                 Pill("Every few hours", rMode == 2) { rMode = 2 }
             }
+            if (rMode != 0) { Spacer(Modifier.height(14.dp)); AlertPicker(alert) { alert = it } }
             if (rMode == 1) {
                 Spacer(Modifier.height(12.dp))
                 TimeBtn("Remind me at", rAt, Modifier.fillMaxWidth()) { rAt = it }
@@ -280,7 +282,8 @@ fun TargetEditor(id: String?, onClose: () -> Unit) {
                     Spacer(Modifier.width(12.dp))
                     TimeBtn("Until", rTo, Modifier.weight(1f)) { rTo = it }
                 }
-                if (rFrom > rTo) Sub("⚠️ This window runs past midnight, until ${hhmm(rTo)} the next day.", Modifier.padding(top = 8.dp), Pal.orange)
+                if (rTo == 0 && rFrom > 0) Sub("Reminders stop at midnight tonight and start again tomorrow.", Modifier.padding(top = 8.dp))
+                else if (rFrom > rTo) Sub("⚠️ This window runs overnight, until ${hhmm(rTo)} the next morning.", Modifier.padding(top = 8.dp), Pal.orange)
                 Spacer(Modifier.height(12.dp))
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf(60 to "1 hour", 120 to "2 hours", 180 to "3 hours", 240 to "4 hours", 360 to "6 hours").forEach { (m, l) ->
@@ -309,9 +312,9 @@ fun TargetEditor(id: String?, onClose: () -> Unit) {
                 val rt = if (rMode == 1) rAt else rTo
                 val re = if (rMode == 1) 1440 else rEvery
                 if (ex == null) Store.saveTrack(c, Track(now.toString(), name.trim(), emoji.ifBlank { "🎯" }, unit.trim(), sv, tv, e, now,
-                    listOf(now to sv), rOn, rf, rt, re, rDays))
+                    listOf(now to sv), rOn, rf, rt, re, rDays, alert))
                 else Store.saveTrack(c, ex.copy(name = name.trim(), emoji = emoji.ifBlank { "🎯" }, unit = unit.trim(), target = tv, end = e,
-                    remOn = rOn, remFrom = rf, remTo = rt, remEvery = re, remDays = rDays))
+                    remOn = rOn, remFrom = rf, remTo = rt, remEvery = re, remDays = rDays, remStyle = alert))
                 ReminderReceiver.schedule(c)
                 onClose()
             }

@@ -182,6 +182,47 @@ fun ModeCard(emoji: String, title: String, desc: String, on: Boolean, onClick: (
     }
 }
 
+/**
+ * "How should it remind you?" Default is pre-selected. The default itself (Gentle / Loud / Wake the screen)
+ * can be changed from this very picker, and in Settings.
+ */
+@Composable
+fun AlertPicker(value: Int, onChange: (Int) -> Unit) {
+    val c = LocalContext.current
+    var def by remember { mutableIntStateOf(Store.style(c).coerceIn(0, 2)) }
+    var dlg by remember { mutableStateOf(false) }
+    val names = listOf("Gentle", "Loud", "Wake the screen")
+    val pick: (Int) -> Unit = { v -> def = v; Store.setStyle(c, v); ReminderReceiver.schedule(c); dlg = false }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text("How should it remind you?", color = Pal.muted, fontSize = 13.sp, modifier = Modifier.weight(1f))
+        Text("Change default", color = Pal.accent, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable { dlg = true }.padding(6.dp))
+    }
+    Spacer(Modifier.height(6.dp))
+    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        listOf(-1 to "Default (${names[def]})", 0 to "Gentle", 1 to "Loud", 2 to "Wake the screen").forEach { (v, l) -> Pill(l, value == v) { onChange(v) } }
+    }
+    Sub(when (value) {
+        -1 -> "Uses your default, currently ${names[def]}."
+        0 -> "A normal notification that pops up while you use the phone."
+        1 -> "Alarm-style sound and strong vibration, plus a pop-up."
+        else -> "Loud, and lights up the screen with a pop-up you can answer from the lock screen."
+    }, Modifier.padding(top = 6.dp))
+    if (dlg) AlertDialog(
+        onDismissRequest = { dlg = false }, containerColor = Pal.card,
+        title = { Text("Default reminder type", color = Pal.ink) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Sub("Used by every reminder that is set to “Default”.")
+                ModeCard("🔔", "Gentle", "A normal pop-up notification.", def == 0) { pick(0) }
+                ModeCard("📣", "Loud", "Alarm-style sound and strong vibration.", def == 1) { pick(1) }
+                ModeCard("📱", "Wake the screen", "Loud, and lights the screen up with a pop-up.", def == 2) { pick(2) }
+            }
+        },
+        confirmButton = { TextButton(onClick = { dlg = false }) { Text("Close") } }
+    )
+}
+
 /** A delete button that asks first. */
 @Composable
 fun ConfirmBtn(t: String, onConfirm: () -> Unit) {
@@ -242,7 +283,7 @@ fun TimeBtn(label: String, min: Int, modifier: Modifier = Modifier, onPick: (Int
         .clickable { TimePickerDialog(c, { _, hh, mm -> onPick(hh * 60 + mm) }, min / 60, min % 60, true).show() }
         .padding(horizontal = 14.dp, vertical = 12.dp)) {
         Text(label.uppercase(), fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.2.sp, color = Pal.muted)
-        Text(hhmm(min), fontSize = 26.sp, fontWeight = FontWeight.ExtraBold, color = Pal.ink)
+        Text(if (label == "Until" && min == 0) "Midnight" else hhmm(min), fontSize = 26.sp, fontWeight = FontWeight.ExtraBold, color = Pal.ink)
     }
 }
 
@@ -377,9 +418,8 @@ object AppRepo {
 @Composable
 fun AppIcon(pkg: String, size: Dp = 40.dp) {
     val c = LocalContext.current
-    val bmp by produceState<ImageBitmap?>(AppRepo.cachedIcon(pkg), pkg) {
-        if (value == null) value = withContext(Dispatchers.IO) { AppRepo.icon(c, pkg) }
-    }
+    var bmp by remember(pkg) { mutableStateOf(AppRepo.cachedIcon(pkg)) }      // keyed by package: never shows another app's icon
+    LaunchedEffect(pkg) { if (bmp == null) bmp = withContext(Dispatchers.IO) { AppRepo.icon(c, pkg) } }
     val b = bmp
     if (b != null) {
         Image(bitmap = b, contentDescription = null, modifier = Modifier.size(size).clip(RoundedCornerShape(size / 4)))

@@ -120,7 +120,9 @@ object UsageCalc {
         }
         fun dayOf(ts: Long): Int { for (d in 0..6) if (ts >= dayStarts[d] && ts < dayStarts[d + 1]) return d; return -1 }
 
-        val ev = c.getSystemService(UsageStatsManager::class.java).queryEvents(dayStarts[0], now)
+        val ev = try { c.getSystemService(UsageStatsManager::class.java).queryEvents(dayStarts[0], now) } catch (e: Exception) {
+            return Insights(List(7) { today.minusDays(6L - it).toEpochDay() }, List(7) { emptyMap<String, Long>() }, List(7) { 0 })
+        }
         val e = UsageEvents.Event()
         var cur = ""
         var curStart = 0L
@@ -177,7 +179,7 @@ fun SinkRow(p: String, value: Long, top: Long, perDay: Long, week: Boolean, bump
     )
 }
 
-fun LazyListScope.insightsItems(c: Context, data: Insights?, range: Int, onRange: (Int) -> Unit, bump: () -> Unit) {
+fun LazyListScope.insightsItems(c: Context, data: Insights?, range: Int, onRange: (Int) -> Unit, sel: Int, onSel: (Int) -> Unit, bump: () -> Unit) {
     if (!Compat.usageOk(c)) {
         item {
             Surf {
@@ -205,37 +207,45 @@ fun LazyListScope.insightsItems(c: Context, data: Insights?, range: Int, onRange
         item { EmptyState("📊", "No usage data yet", "Use your phone for a bit, then come back. Android only records what happened after access was granted.") }
         return
     }
-    val todayTot = tot[6]
-    val prior = tot.take(6).filter { it > 0L }
-    val avg = if (prior.isEmpty()) 0L else prior.sum() / prior.size
+    val s = sel.coerceIn(0, 6)
+    val dayTot = tot[s]
+    val dayName = if (s == 6) "Today" else LocalDate.ofEpochDay(data.days[s]).format(DateTimeFormatter.ofPattern("EEE d MMM"))
+    val others = tot.filterIndexed { i, v -> i != s && v > 0L }
+    val avg = if (others.isEmpty()) 0L else others.sum() / others.size
 
     item {
         Surf(brush = Brush.linearGradient(listOf(Color(0xFF6D4DF6), Color(0xFF3F7CF5)))) {
-            Text("TODAY", fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.4.sp, color = Color.White.copy(alpha = 0.75f))
-            Text(fmtDur(todayTot), fontSize = 46.sp, fontWeight = FontWeight.ExtraBold, color = Color.White)
-            val pct = if (avg > 0) Math.abs(todayTot - avg) * 100 / avg else 0L
-            Text(if (avg == 0L) "First day of data" else if (todayTot <= avg) "↓ $pct% below your daily average" else "↑ $pct% above your daily average",
+            Text(dayName.uppercase(), fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.4.sp, color = Color.White.copy(alpha = 0.75f))
+            Text(fmtDur(dayTot), fontSize = 46.sp, fontWeight = FontWeight.ExtraBold, color = Color.White)
+            val pct = if (avg > 0) Math.abs(dayTot - avg) * 100 / avg else 0L
+            Text(if (avg == 0L) "Not enough other days to compare" else if (dayTot <= avg) "↓ $pct% below your average" else "↑ $pct% above your average",
                 fontSize = 14.sp, color = Color.White.copy(alpha = 0.9f))
             Spacer(Modifier.height(8.dp))
-            Text("🔓 ${data.unlocks[6]} unlocks today", fontSize = 13.sp, color = Color.White.copy(alpha = 0.8f))
+            Text("🔓 ${data.unlocks[s]} unlocks", fontSize = 13.sp, color = Color.White.copy(alpha = 0.8f))
         }
     }
     item {
         Surf {
             Title("Last 7 days")
-            Spacer(Modifier.height(14.dp))
+            Sub("Tap a day to see what you used.", Modifier.padding(top = 2.dp))
+            Spacer(Modifier.height(12.dp))
             val mx = tot.max().coerceAtLeast(1L)
-            Row(Modifier.fillMaxWidth().height(150.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
+            Row(Modifier.fillMaxWidth().height(160.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.Bottom) {
                 for (d in 0..6) {
                     val f = tot[d].toFloat() / mx
-                    Column(Modifier.weight(1f).fillMaxHeight(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Bottom) {
-                        Text(if (tot[d] > 0) fmtHrs(tot[d]) else "", fontSize = 10.sp, color = Pal.muted)
+                    Column(
+                        Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(12.dp))
+                            .background(if (d == s) Pal.accent.copy(alpha = 0.10f) else Color.Transparent)
+                            .clickable { onSel(d); onRange(0) }.padding(vertical = 4.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Bottom
+                    ) {
+                        Text(if (tot[d] > 0) fmtHrs(tot[d]) else "", fontSize = 10.sp, color = if (d == s) Pal.ink else Pal.muted)
                         Spacer(Modifier.height(4.dp))
-                        Box(Modifier.fillMaxWidth().height((96 * f).dp.coerceAtLeast(3.dp)).clip(RoundedCornerShape(8.dp))
-                            .background(if (d == 6) Pal.accent else Pal.accent.copy(alpha = 0.45f)))
+                        Box(Modifier.fillMaxWidth(0.6f).height((92 * f).dp.coerceAtLeast(3.dp)).clip(RoundedCornerShape(8.dp))
+                            .background(if (d == s) Pal.accent else Pal.accent.copy(alpha = 0.4f)))
                         Spacer(Modifier.height(5.dp))
                         Text(LocalDate.ofEpochDay(data.days[d]).dayOfWeek.name.take(1), fontSize = 11.sp, fontWeight = FontWeight.Bold,
-                            color = if (d == 6) Pal.ink else Pal.muted)
+                            color = if (d == s) Pal.ink else Pal.muted)
                     }
                 }
             }
@@ -248,7 +258,7 @@ fun LazyListScope.insightsItems(c: Context, data: Insights?, range: Int, onRange
                 IconChip("💡", Pal.orange)
                 Spacer(Modifier.width(14.dp))
                 Column {
-                    Title("Your biggest time sink")
+                    Title("Your biggest time sink this week")
                     Sub("${AppRepo.label(wTop.key)} takes ${wTop.value * 100 / week.values.sum()}% of your week, about ${fmtDur(wTop.value / 7)} a day.")
                 }
             }
@@ -256,18 +266,18 @@ fun LazyListScope.insightsItems(c: Context, data: Insights?, range: Int, onRange
     }
     item {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Pill("Today", range == 0) { onRange(0) }
+            Pill(dayName, range == 0) { onRange(0) }
             Pill("This week", range == 1) { onRange(1) }
         }
     }
-    val src: Map<String, Long> = if (range == 0) data.perDay[6] else week
+    val src: Map<String, Long> = if (range == 0) data.perDay[s] else week
     val rows = src.entries.sortedByDescending { it.value }.take(10)
-    if (rows.isEmpty()) item { Sub("Nothing recorded for today yet.", Modifier.padding(4.dp)) }
+    if (rows.isEmpty()) item { Sub("Nothing recorded for ${if (s == 6) "today" else dayName} yet.", Modifier.padding(4.dp)) }
     else item {
         Surf {
             val top = rows.first().value
-            rows.forEachIndexed { i, e ->
-                if (i > 0) Divider1()
+            rows.forEachIndexed { idx, e ->
+                if (idx > 0) Divider1()
                 SinkRow(e.key, e.value, top, if (range == 0) e.value else e.value / 7, range == 1, bump)
             }
         }

@@ -233,7 +233,8 @@ fun RuleEditor(r: RemRule, showDays: Boolean, onChange: (RemRule) -> Unit) {
                 Spacer(Modifier.width(12.dp))
                 TimeBtn("Until", r.to, Modifier.weight(1f)) { onChange(r.copy(to = it)) }
             }
-            if (!allDay && r.from > r.to) Sub("⚠️ This window runs past midnight, until ${hhmm(r.to)} the next day.", color = Pal.orange)
+            if (!allDay && r.to == 0 && r.from > 0) Sub("Reminders stop at midnight tonight and start again tomorrow at ${hhmm(r.from)}.")
+            else if (!allDay && r.from > r.to) Sub("⚠️ This window runs overnight, until ${hhmm(r.to)} the next morning.", color = Pal.orange)
             Sub("How often")
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf(30 to "30 min", 60 to "1 hour", 90 to "90 min", 120 to "2 hours", 180 to "3 hours", 240 to "4 hours").forEach { (m, l) ->
@@ -260,6 +261,7 @@ fun HabitEditor(id: String?, onClose: () -> Unit) {
     var step by remember { mutableIntStateOf(ex?.step ?: 1) }
     var days by remember { mutableIntStateOf(ex?.days ?: 127) }
     var remOn by remember { mutableStateOf(ex?.remOn ?: false) }
+    var alert by remember { mutableIntStateOf(ex?.remStyle ?: -1) }
     var rules by remember {
         mutableStateOf(
             if (ex != null) listOf(RemRule(if (ex.remDays < 0) ex.days else ex.remDays, ex.remFrom, ex.remTo, ex.remEvery)) + ex.extra
@@ -315,10 +317,12 @@ fun HabitEditor(id: String?, onClose: () -> Unit) {
         }
         Surf {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) { Title("Reminders"); Sub("Skipped on quiet times and once you've done it") }
+                Column(Modifier.weight(1f)) { Title("Remind me"); Sub("Choose how and when. Skipped on quiet times and once you've done it.") }
                 Switch(checked = remOn, onCheckedChange = { remOn = it })
             }
             if (remOn) {
+                Spacer(Modifier.height(14.dp))
+                AlertPicker(alert) { alert = it }
                 Spacer(Modifier.height(14.dp))
                 if (!adv) {
                     RuleEditor(rules[0], false) { rules = listOf(it) }
@@ -351,7 +355,7 @@ fun HabitEditor(id: String?, onClose: () -> Unit) {
                 Store.saveHabit(c, Habit(ex?.id ?: System.currentTimeMillis().toString(), name.ifBlank { "Habit" }, emoji.ifBlank { "✅" },
                     kind, if (kind == 0) 1 else if (kind == 1 && open) 0 else target, unit.trim(), if (kind == 0) 1 else step, days, remOn, m.from, m.to, m.every,
                     ex?.created ?: System.currentTimeMillis(), ex?.streak ?: 0, ex?.best ?: 0, ex?.ev ?: (Store.today() - 1),
-                    if (adv) m.days else -1, if (adv) rules.drop(1) else emptyList()))
+                    if (adv) m.days else -1, if (adv) rules.drop(1) else emptyList(), alert))
                 ReminderReceiver.schedule(c)
                 onClose()
             }

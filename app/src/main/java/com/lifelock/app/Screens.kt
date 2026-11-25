@@ -46,6 +46,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.time.Instant
@@ -294,7 +295,7 @@ fun GoalCard(g: Goal, t: Long, bump: () -> Unit) {
                 }
             } else Spacer(Modifier.weight(1f))
             IconButton(onClick = {
-                if (Store.canDelete(g)) { Store.deleteGoal(c, g.id); bump() }
+                if (Store.canDelete(g)) { Store.deleteGoal(c, g.id); ReminderReceiver.schedule(c); bump() }
                 else toast(c, "Locked until ${LocalDate.ofEpochDay(g.end)}. Goals can only be deleted in the first 10 minutes.")
             }) { Icon(Icons.Default.Delete, null, tint = Pal.muted) }
         }
@@ -307,6 +308,7 @@ fun LimitsScreen(ver: Int, now: Long, sub: Int, onSub: (Int) -> Unit, go: (Page)
     val c = LocalContext.current
     val limits = Store.limits(c)
     var range by remember { mutableIntStateOf(0) }
+    var sel by remember { mutableIntStateOf(6) }
     val data by produceState<Insights?>(null, sub, now / 60000L) {
         if (sub == 1 && Compat.usageOk(c)) value = withContext(Dispatchers.Default) { UsageCalc.load(c) }
     }
@@ -333,7 +335,7 @@ fun LimitsScreen(ver: Int, now: Long, sub: Int, onSub: (Int) -> Unit, go: (Page)
         if (sub == 0) {
             if (limits.isEmpty()) item { EmptyState("⏳", "No limits yet", "Give Instagram, YouTube or any app a daily budget. Not sure which? Check Insights.", "Add a limit") { go(Page.NewLimit) } }
             items(limits, key = { it.pkg }) { l -> LimitCard(l, now, go, bump) }
-        } else insightsItems(c, data, range, { range = it }, bump)
+        } else insightsItems(c, data, range, { range = it }, sel, { sel = it }, bump)
     }
 }
 
@@ -432,20 +434,10 @@ fun SettingsScreen(ver: Int, now: Long, go: (Page) -> Unit, bump: () -> Unit) {
     val quiets = Store.quiets(c)
     val appVer = try { c.packageManager.getPackageInfo(c.packageName, 0).versionName } catch (e: Exception) { "?" }
     var showAdv by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val later: (() -> Unit) -> Unit = { f -> scope.launch(Dispatchers.Default) { f() } }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 40.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item { ScreenTitle("Settings", "LifeLock version $appVer") }
-        item {
-            Surf {
-                Title("Protection status")
-                StatusLine(Perm.guard(c), "Blocking engine")
-                StatusLine(Perm.overlay(c), "Block screen over apps")
-                StatusLine(Perm.notif(c), "Notifications")
-                StatusLine(Compat.usageOk(c), "Usage access (exact time limits)")
-                Sub(if (GuardService.inst == null) "Engine is not running."
-                    else "Since it started ${(System.currentTimeMillis() - GuardService.startedAt) / 60000} min ago: ${GuardService.events} app switches, ${GuardService.ticks} timer wake-ups.",
-                    Modifier.padding(top = 12.dp))
-            }
-        }
         item { SectionLabel("Appearance") }
         item {
             Surf {
@@ -458,17 +450,18 @@ fun SettingsScreen(ver: Int, now: Long, go: (Page) -> Unit, bump: () -> Unit) {
                 Sub("Default is the deep-navy look. Dark is black with a purple glow. AMOLED is pure #000000 with no glow, so pixels are fully off on your S24's screen.", Modifier.padding(top = 10.dp))
             }
         }
-        item { SectionLabel("How reminders alert you") }
+        item { SectionLabel("Default reminder type") }
         item {
             val st = Store.style(c)
             val fsOk = Build.VERSION.SDK_INT < 34 || c.getSystemService(android.app.NotificationManager::class.java).canUseFullScreenIntent()
             Surf {
-                Title("Reminder style")
+                Title("How do you want to be reminded?")
+                Sub("This is the default. Every reminder uses it unless you choose something else for that habit, target or goal. You can also change it from the reminder options while you add one.", Modifier.padding(top = 4.dp))
                 Spacer(Modifier.height(12.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    ModeCard("🔔", "Gentle", "A normal notification that pops up while you're using the phone.", st == 0) { Store.setStyle(c, 0); ReminderReceiver.schedule(c); bump() }
-                    ModeCard("📣", "Loud", "Alarm-style sound and strong vibration, plus a pop-up. Hard to miss.", st == 1) { Store.setStyle(c, 1); ReminderReceiver.schedule(c); bump() }
-                    ModeCard("📱", "Wake the screen", "Loud, and turns the screen on with a big pop-up you can answer from the lock screen.", st == 2) { Store.setStyle(c, 2); ReminderReceiver.schedule(c); bump() }
+                    ModeCard("🔔", "Gentle", "A normal notification that pops up while you're using the phone.", st == 0) { Store.setStyle(c, 0); later { ReminderReceiver.schedule(c) }; bump() }
+                    ModeCard("📣", "Loud", "Alarm-style sound and strong vibration, plus a pop-up. Hard to miss.", st == 1) { Store.setStyle(c, 1); later { ReminderReceiver.schedule(c) }; bump() }
+                    ModeCard("📱", "Wake the screen", "Loud, and turns the screen on with a big pop-up you can answer from the lock screen.", st == 2) { Store.setStyle(c, 2); later { ReminderReceiver.schedule(c) }; bump() }
                 }
                 if (st == 2 && !fsOk) {
                     Sub("Android needs your permission to show pop-ups over the lock screen.", Modifier.padding(top = 12.dp), Pal.orange)
@@ -476,7 +469,6 @@ fun SettingsScreen(ver: Int, now: Long, go: (Page) -> Unit, bump: () -> Unit) {
                         Perm.open(c, Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT, Uri.parse("package:${c.packageName}")))
                     }
                 }
-                Btn("Send a test reminder", Modifier.padding(top = 14.dp), filled = false) { Reminders.send(c, true) }
                 Sub("Not seeing pop-ups on Samsung? Settings → Notifications → App notifications → LifeLock: turn on Pop-up and Sound for the reminder categories, and check Do Not Disturb.",
                     Modifier.padding(top = 10.dp))
             }
@@ -504,22 +496,21 @@ fun SettingsScreen(ver: Int, now: Long, go: (Page) -> Unit, bump: () -> Unit) {
                     IconChip("🔔", Pal.accent)
                     Spacer(Modifier.width(14.dp))
                     Column(Modifier.weight(1f)) { Title("Check-in reminders"); Sub("Nudges while goals are pending") }
-                    Switch(checked = rem.on, onCheckedChange = { Store.saveRem(c, rem.copy(on = it)); ReminderReceiver.schedule(c); bump() })
+                    Switch(checked = rem.on, onCheckedChange = { Store.saveRem(c, rem.copy(on = it)); later { ReminderReceiver.schedule(c) }; bump() })
                 }
                 if (rem.on) {
                     Spacer(Modifier.height(16.dp))
                     Row {
-                        TimeBtn("From", rem.from, Modifier.weight(1f)) { Store.saveRem(c, rem.copy(from = it)); ReminderReceiver.schedule(c); bump() }
+                        TimeBtn("From", rem.from, Modifier.weight(1f)) { Store.saveRem(c, rem.copy(from = it)); later { ReminderReceiver.schedule(c) }; bump() }
                         Spacer(Modifier.width(12.dp))
-                        TimeBtn("Until", rem.to, Modifier.weight(1f)) { Store.saveRem(c, rem.copy(to = it)); ReminderReceiver.schedule(c); bump() }
+                        TimeBtn("Until", rem.to, Modifier.weight(1f)) { Store.saveRem(c, rem.copy(to = it)); later { ReminderReceiver.schedule(c) }; bump() }
                     }
                     Spacer(Modifier.height(14.dp))
                     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         listOf(15 to "Every 15 min", 30 to "30 min", 60 to "1 hour", 120 to "2 hours", 180 to "3 hours").forEach { (m, l) ->
-                            Pill(l, rem.every == m) { Store.saveRem(c, rem.copy(every = m)); ReminderReceiver.schedule(c); bump() }
+                            Pill(l, rem.every == m) { Store.saveRem(c, rem.copy(every = m)); later { ReminderReceiver.schedule(c) }; bump() }
                         }
                     }
-                    Btn("Send a test notification", Modifier.padding(top = 14.dp), filled = false) { Reminders.send(c, true) }
                 }
             }
         }
@@ -537,7 +528,7 @@ fun SettingsScreen(ver: Int, now: Long, go: (Page) -> Unit, bump: () -> Unit) {
             }
             item { Btn("+ Add quiet time", filled = false) { go(Page.QuietEdit(null)) } }
         }
-        item { SectionLabel("Help") }
+        item { SectionLabel("Help & support") }
         item {
             Surf {
                 Title("Quick answers")
@@ -552,7 +543,38 @@ fun SettingsScreen(ver: Int, now: Long, go: (Page) -> Unit, bump: () -> Unit) {
                 }
             }
         }
+        item {
+            Surf {
+                Title("Something not working?")
+                Sub("Copy a short report of what LifeLock has been doing and send it to whoever looks after the app. It contains no personal data, only counts.",
+                    Modifier.padding(top = 4.dp))
+                Btn("Copy support report", Modifier.padding(top = 12.dp), filled = false) {
+                    val day = Store.today()
+                    val sb = StringBuilder("LifeLock $appVer support report (today / yesterday)\n")
+                    listOf("events" to "App switches seen", "ticks" to "Timer wake-ups", "blocks" to "Block screens shown",
+                        "alarms" to "Reminder alarms", "notifs" to "Notifications sent", "polls" to "Compatibility checks").forEach { (k, l) ->
+                        sb.append("$l: ${Store.diag(c, k, day)} / ${Store.diag(c, k, day - 1)}\n")
+                    }
+                    sb.append("Recent reminders:\n"); Store.notifLog(c).forEach { sb.append("  $it\n") }
+                    sb.append("Engine running: ${GuardService.inst != null}, usage access: ${Compat.usageOk(c)}, battery-saver reminders: ${Store.lowPower(c)}, default reminder style: ${Store.style(c)}\n")
+                    c.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("lifelock", sb.toString()))
+                    toast(c, "Copied")
+                }
+            }
+        }
         if (showAdv) {
+        item {
+            Surf {
+                Title("Protection status")
+                StatusLine(Perm.guard(c), "Blocking engine")
+                StatusLine(Perm.overlay(c), "Block screen over apps")
+                StatusLine(Perm.notif(c), "Notifications")
+                StatusLine(Compat.usageOk(c), "Usage access (exact time limits)")
+                Sub(if (GuardService.inst == null) "Engine is not running."
+                    else "Since it started ${(System.currentTimeMillis() - GuardService.startedAt) / 60000} min ago: ${GuardService.events} app switches, ${GuardService.ticks} timer wake-ups.",
+                    Modifier.padding(top = 12.dp))
+            }
+        }
         item { SectionLabel("Diagnostics") }
         item {
             val day = Store.today()
@@ -593,7 +615,7 @@ fun SettingsScreen(ver: Int, now: Long, go: (Page) -> Unit, bump: () -> Unit) {
                         Title("Battery-saver reminders")
                         Sub("Reminders appear when you next pick up your phone instead of waking it. Lowest possible drain, but not instant while the phone is idle. Only applies to the Gentle style; Loud reminders always arrive on time.")
                     }
-                    Switch(checked = Store.lowPower(c), onCheckedChange = { Store.setLowPower(c, it); ReminderReceiver.schedule(c); bump() })
+                    Switch(checked = Store.lowPower(c), onCheckedChange = { Store.setLowPower(c, it); later { ReminderReceiver.schedule(c) }; bump() })
                 }
             }
         }
@@ -630,9 +652,9 @@ fun SettingsScreen(ver: Int, now: Long, go: (Page) -> Unit, bump: () -> Unit) {
                     Sub("Quick-log habit", Modifier.padding(top = 14.dp))
                     Spacer(Modifier.height(6.dp))
                     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Pill("Auto", qh.isEmpty() || counters.none { it.id == qh }) { Store.setQuickHabit(c, ""); LifeWidget.refresh(c); bump() }
+                        Pill("Auto", qh.isEmpty() || counters.none { it.id == qh }) { Store.setQuickHabit(c, ""); later { LifeWidget.refresh(c) }; bump() }
                         counters.forEach { h ->
-                            Pill("${h.emoji} ${h.name}", qh == h.id) { Store.setQuickHabit(c, h.id); LifeWidget.refresh(c); bump() }
+                            Pill("${h.emoji} ${h.name}", qh == h.id) { Store.setQuickHabit(c, h.id); later { LifeWidget.refresh(c) }; bump() }
                         }
                     }
                 }

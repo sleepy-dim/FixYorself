@@ -39,6 +39,8 @@ class GuardService : AccessibilityService() {
     private val launchable = HashMap<String, Boolean>()
     private var screenOn = true
     private var rxOn = false
+    /** All reads of Android's usage records happen here, never on the thread that draws the screen. */
+    private val bg = java.util.concurrent.Executors.newSingleThreadExecutor()
 
     /**
      * No fixed polling. The timer is only set for the exact moment something can change:
@@ -48,10 +50,14 @@ class GuardService : AccessibilityService() {
     private val tick = Runnable {
         ticks++
         Store.bump(this, "ticks")
-        accrue()
-        check(fg)
-        Store.flushUsage(this, true)
-        planNext()
+        if (sysUsage() && fg.isNotEmpty() && screenOn) {
+            syncFg(fg, true) { check(fg); Store.flushUsage(this, true); planNext() }
+        } else {
+            accrue()
+            check(fg)
+            Store.flushUsage(this, true)
+            planNext()
+        }
     }
 
     private val screenRx = object : BroadcastReceiver() {
@@ -60,7 +66,7 @@ class GuardService : AccessibilityService() {
                 accrue(); Store.flushUsage(this@GuardService, true); screenOn = false; h.removeCallbacks(tick)
             } else if (i?.action == Intent.ACTION_SCREEN_ON) {
                 screenOn = true; last = System.currentTimeMillis()
-                h.postDelayed({ if (sysUsage()) Store.syncUsage(this@GuardService, fg); check(fg) }, 600L)   // catches schedules that started while the screen was off
+                h.postDelayed({ if (sysUsage()) syncFg(fg, true) { check(fg); planNext() } else check(fg) }, 600L)   // catches schedules that started while the screen was off
                 planNext()
             }
         }
@@ -74,15 +80,22 @@ class GuardService : AccessibilityService() {
         WatchService.cancel()
         screenOn = getSystemService(PowerManager::class.java).isInteractive
         last = System.currentTimeMillis()
-        Store.rollover(this)
         if (!rxOn) {
             ContextCompat.registerReceiver(this, screenRx,
                 IntentFilter().apply { addAction(Intent.ACTION_SCREEN_OFF); addAction(Intent.ACTION_SCREEN_ON) },
                 ContextCompat.RECEIVER_NOT_EXPORTED)
             rxOn = true
         }
-        fg = Compat.lastForeground(this)
-        if (fg.isNotEmpty()) { if (sysUsage()) Store.syncUsage(this, fg); check(fg) }
+        bg.execute {
+            try { Store.rollover(this) } catch (e: Exception) { }
+            val f = Compat.lastForeground(this)
+            h.post {
+                if (fg.isEmpty()) fg = f
+                if (fg.isNotEmpty()) {
+                    if (sysUsage()) syncFg(fg, true) { check(fg); planNext() } else { check(fg); planNext() }
+                }
+            }
+        }
         planNext()
     }
 
@@ -95,7 +108,7 @@ class GuardService : AccessibilityService() {
         if (!Store.hasRules(this)) { fg = p; return }
         if (p != fg) {
             accrue(); Store.flushUsage(this); fg = p
-            if (sysUsage()) syncFg(p, false)
+            if (sysUsage()) syncFg(p, false) { if (fg == p) { check(p); planNext() } }
             check(p)
             planNext()
         } else if (System.currentTimeMillis() - lastChk > 3000L) {
@@ -112,6 +125,7 @@ class GuardService : AccessibilityService() {
 
     override fun onDestroy() {
         Store.flushUsage(this, true)
+        bg.shutdown()
         h.removeCallbacks(tick)
         if (rxOn) { try { unregisterReceiver(screenRx) } catch (e: Exception) { }; rxOn = false }
         inst = null
@@ -140,11 +154,14 @@ class GuardService : AccessibilityService() {
     }
 
     /** Reads Android's usage numbers for [p]; skipped if it was just done (switching in and out of an app is common). */
-    private fun syncFg(p: String, force: Boolean) {
+    private fun syncFg(p: String, force: Boolean, then: () -> Unit = {}) {
         val n = System.currentTimeMillis()
         if (!force && p == syncPkg && n - syncAt < 20000L) return
         syncPkg = p; syncAt = n
-        Store.syncUsage(this, p)
+        bg.execute {
+            try { Store.syncUsage(this, p) } catch (e: Exception) { }
+            h.post(then)
+        }
     }
 
     private fun accrue() {

@@ -9,8 +9,8 @@ android {
         applicationId = "com.lifelock.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 20
-        versionName = "3.11"
+        versionCode = 23
+        versionName = "3.13"
     }
     signingConfigs {
         getByName("debug") {

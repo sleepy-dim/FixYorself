@@ -140,7 +140,7 @@ fun Root(startKey: Int, visible: Boolean, launch: String?, consumed: () -> Unit)
 
     // Runs every time the app comes to the front: refresh day rollover, icons and permission status.
     LaunchedEffect(startKey) {
-        Store.rollover(c)
+        withContext(Dispatchers.Default) { Store.rollover(c) }
         AppRepo.load(c)
         withContext(Dispatchers.Default) { Store.syncUsage(c) }
         ver++
@@ -153,7 +153,7 @@ fun Root(startKey: Int, visible: Boolean, launch: String?, consumed: () -> Unit)
         while (true) {
             delay(if (Store.focusUntil(c) > System.currentTimeMillis()) 1000L else 30000L)
             now = System.currentTimeMillis()
-            if (Store.today() != day) { day = Store.today(); Store.rollover(c); ver++ }
+            if (Store.today() != day) { day = Store.today(); withContext(Dispatchers.Default) { Store.rollover(c) }; ver++ }
         }
     }
     // Status-bar icons follow the theme.
